@@ -51,7 +51,7 @@ class BaseDataset(Dataset):
     def get_input_shape(self):
         if self.dataset_name == 'fMRI_image':
             shape = nib.load(self.index_l[0][2]).get_fdata().shape # shape is: (99, 117, 95, 363)
-        elif self.dataset_name in ['fMRI_timeseries', 'DTI', 'sMRI', 'struct', 'hcp', 'DTI+sMRI', 'multimodal']:
+        elif self.dataset_name in ['fMRI_timeseries', 'DTI', 'sMRI', 'struct', 'hcp', 'DTI+sMRI', 'multimodal', 'multimodal_prs']:
             shape = np.load(self.index_l[0][2]).shape # shape is: (370, 84) in fMRI timeseries case
         return shape
 
@@ -463,6 +463,7 @@ class ABCD_sMRI(BaseDataset):
         return ans_dict
     
 class ABCD_struct (BaseDataset):
+    ## uses two structural image together ##
     def __init__(self, **kwargs):
         self.register_args(**kwargs)
         self.smri_dir = kwargs.get('smri_path')
@@ -514,6 +515,7 @@ class ABCD_struct (BaseDataset):
         return ans_dict
     
 class ABCD_DTI_sMRI(BaseDataset):
+    ## diagonal - sMRI volume, non-diagonal - DTI count ##
     def __init__(self, **kwargs):
         self.register_args(**kwargs)
         self.data_dir = kwargs.get('dti+smri_path')
@@ -568,7 +570,6 @@ class ABCD_multimodal(BaseDataset):
         self.subject_folders = []
         self.feature_map_gen = kwargs.get('feature_map_gen')
         self.feature_map_size = kwargs.get('feature_map_size')
-        self.meta_data = pd.read_csv(os.path.join(kwargs.get('base_path'),'data','metadata','ABCD_phenotype_total.csv'))
         self.subject_folders = []
         self.intermediate_vec = kwargs.get('intermediate_vec')
         self.filtering_type = kwargs.get('filtering_type')
@@ -651,5 +652,136 @@ class ABCD_multimodal(BaseDataset):
         ultralow = ultralow.T.float() #.type(torch.DoubleTensor)  # (368, 84) or (128, 84)        
         
         ans_dict= {'fmri_raw_sequence':raw, 'fmri_lowfreq_sequence':low, 'fmri_ultralowfreq_sequence':ultralow, 'struct':struct, 'subject':subj,'subject_name':subj_name, self.target:target}
+        
+        return ans_dict
+
+    
+# currently supports intelligence regression only!!!
+class ABCD_multimodal_prs(BaseDataset):
+    def __init__(self, **kwargs):
+        self.register_args(**kwargs)
+        self.struct_dir = kwargs.get('dti+smri_path')
+        self.fmri_dir = kwargs.get('fmri_timeseries_path')
+        self.prs_dir = kwargs.get('prs_path')
+        self.meta_data = pd.read_csv(os.path.join(kwargs.get('base_path'),'data','metadata','ABCD_phenotype_total.csv'))
+        self.prs_data = pd.read_csv(os.path.join(kwargs.get('prs_path'),'ABCD_EUR_Multibased_PRScsx_PC1-10resid_scaled.csv'))
+        self.subject_names = os.listdir(self.struct_dir)
+        self.subject_folders = []
+        self.feature_map_gen = kwargs.get('feature_map_gen')
+        self.feature_map_size = kwargs.get('feature_map_size')
+        self.subject_folders = []
+        self.intermediate_vec = kwargs.get('intermediate_vec')
+        self.filtering_type = kwargs.get('filtering_type')
+        
+        # prs data preprocessing
+        self.prs_data['subjectkey'] = self.prs_data['subjectkey'].apply(lambda x : x.replace('_', ''))
+        #if 'nihtbx' in self.target:
+        non_na_prs = self.prs_data[['subjectkey', 'CPeur2', 'EAeur1', 'IQeur2']].dropna(axis=0)
+        subjects_prs = list(non_na_prs['subjectkey']) # subjects의 형식: NDARINVZRHTXMXD
+        
+        # ABCD 에서 target value가 결측값인 샘플 제거
+        non_na = self.meta_data[['subjectkey',self.target]].dropna(axis=0)
+        non_na = pd.merge(non_na, non_na_prs, how='inner', on='subjectkey')
+        subjects = list(non_na['subjectkey']) # subjects의 형식: NDARINVZRHTXMXD
+        
+        # 길이가 370 이상인 subject들만 처리
+        with open("rsfMRI_upper370_sub_list.txt", mode="r") as file:
+            subject_upper370 = file.read().splitlines()
+        
+        subjects = list(set(subjects) & set(subject_upper370))
+        
+            
+        with open("rsfMRI_filtering_with_nan_sub_list.txt", mode="r") as file:
+            nan_subjects = file.read().splitlines()
+        subjects = set(subjects) - set(nan_subjects)
+        
+        # normalization - prs
+        prs1_mean = non_na['CPeur2'].mean()
+        prs1_std = non_na['CPeur2'].std()
+
+        prs2_mean = non_na['EAeur1'].mean()
+        prs2_std = non_na['EAeur1'].std()
+
+        prs3_mean = non_na['IQeur2'].mean()
+        prs3_std = non_na['IQeur2'].std()
+        
+        # normalization - regression target
+        if self.fine_tune_task == 'regression':
+            cont_mean = non_na[self.target].mean()
+            cont_std = non_na[self.target].std()
+        
+        for i,filename in enumerate(os.listdir(self.struct_dir)):
+            # filename 형식: dti_count+smri_cortical_thickness_NDARINVZRHTXMXD.npy
+            subject=filename.split('_')[-1].split('.')[0] # subject의 형식: NDARINVZRHTXMXD
+            if subject in subjects:
+                # get prs
+                prs1 = torch.tensor((non_na.loc[non_na['subjectkey']==subject, 'CPeur2'].values[0] - prs1_mean) / prs1_std)
+                prs1 = prs1.float()
+
+                prs2 = torch.tensor((non_na.loc[non_na['subjectkey']==subject, 'EAeur1'].values[0] - prs2_mean) / prs2_std)
+                prs2 = prs2.float()
+
+                prs3 = torch.tensor((non_na.loc[non_na['subjectkey']==subject, 'IQeur2'].values[0] - prs3_mean) / prs3_std)
+                prs3 = prs3.float()
+                    
+                
+                # Normalization
+                if self.fine_tune_task == 'regression':
+                    target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
+                    target = target.float()
+                elif self.fine_tune_task == 'binary_classification':
+                    target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
+                
+                path_to_DTI_sMRIs = os.path.join(self.struct_dir, filename)
+                path_to_fMRIs =  os.path.join(self.fmri_dir, 'sub-'+subject, 'desikankilliany_sub-'+subject+'.npy')
+                self.index_l.append((i, subject, path_to_DTI_sMRIs, path_to_fMRIs, target, prs1, prs2, prs3))
+
+    def __len__(self):
+        N = len(self.index_l)
+        return N
+
+    def __getitem__(self, index):
+        subj, subj_name, path_to_DTI_sMRIs, path_to_fMRIs, target, prs1, prs2, prs3 = self.index_l[index]
+        struct = np.load(path_to_DTI_sMRIs)
+        struct = torch.Tensor(scipy.stats.zscore(struct, axis=None)).half()
+        func = np.load(path_to_fMRIs)[20:].T # [84, 350 ~ 361]
+        ts_length = func.shape[1]
+        pad = 368-ts_length
+        # frequency divide - padding ㄱㄱ
+        T = TimeSeries(func, sampling_interval=0.8)
+        FA = FilterAnalyzer(T, lb=0.0035)
+        raw = scipy.stats.zscore(FA.data, axis=1)
+        if self.filtering_type == 'FIR':
+            low = scipy.stats.zscore(FA.fir.data, axis=1) #1) #(84, 353)
+            ultralow = scipy.stats.zscore(FA.data-FA.fir.data, axis=1) #1) #(84, 353)
+        elif self.filtering_type == 'Boxcar':
+            low = scipy.stats.zscore(FA.filtered_boxcar.data, axis=1) #1) #(84, 353)
+            ultralow = scipy.stats.zscore(FA.data-FA.filtered_boxcar.data, axis=1) #1) #(84, 353)
+
+        # pad - raw                                
+        raw = F.pad(torch.from_numpy(raw), (pad//2, pad-pad//2), "constant", 0) # (84, 368)
+        raw = raw.T.float() #.type(torch.DoubleTensor)  # (368, 84)
+            
+        # pad - low                                
+        low = F.pad(torch.from_numpy(low), (pad//2, pad-pad//2), "constant", 0) # (84, 368)
+        low = low.T.float() #.type(torch.DoubleTensor)  # (368, 84)
+
+        # pad - ultralow
+        if self.feature_map_gen == 'resample' and self.feature_map_size == 'different':
+            ultralow = AF.resample(waveform = torch.Tensor(ultralow),
+                                   orig_freq = 3,
+                                   new_freq = 1,
+                                   resampling_method = 'sinc_interpolation') # torch.Size([84, 117])
+            pad_ultralow = 128 - ultralow.shape[1]
+            ultralow = F.pad(ultralow, (pad_ultralow//2, pad_ultralow-pad_ultralow//2), "constant", 0) # (84, 128) - pad on last dimension
+        else:
+            ultralow = F.pad(torch.from_numpy(ultralow), (pad//2, pad-pad//2), "constant", 0) # (84, 368)
+
+        ultralow = ultralow.T.float() #.type(torch.DoubleTensor)  # (368, 84) or (128, 84)        
+        
+        
+        prs = torch.Tensor([prs1, prs2, prs3])
+        
+        ans_dict= {'fmri_raw_sequence':raw, 'fmri_lowfreq_sequence':low, 'fmri_ultralowfreq_sequence':ultralow, 'struct':struct, 'subject':subj,'subject_name':subj_name, self.target:target, 'prs':prs}
         
         return ans_dict

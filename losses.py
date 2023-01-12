@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 from torchvision import models
 import numpy as np
+from scipy.spatial import distance
+
 
 
 def get_intense_voxels(yy,shape,gpu):
@@ -277,7 +279,37 @@ class Mask_Loss(nn.Module):
         return self.mask_loss 
         
 
+class UNet_Loss(nn.Module):
+    def __init__(self,**kwargs):
+        super(UNet_Loss, self).__init__()
+        self.loss = 0.0
         
+    def mean_squared_error(self, y, t):
+        return ((y-t)**2).mean(axis=None)
+    
+    def forward(self, fMRI_in, fMRI_out, struct_in, struct_out):
+        device = fMRI_in.get_device()
+        fMRI_out = fMRI_out.squeeze(dim=1)
+        struct_out = struct_out.squeeze(dim=1)
+        # everything is (batch size, 84, 84)
+
+        for i in range(fMRI_in.shape[0]):
+            after_UNet_fMRI = fMRI_out[i, :, :]
+            before_UNet_fMRI = fMRI_in[i, :, :]
+            before_UNet_fMRI = (before_UNet_fMRI - before_UNet_fMRI.min()) / (before_UNet_fMRI.max() - before_UNet_fMRI.min())
+
+            self.loss += self.mean_squared_error(after_UNet_fMRI, before_UNet_fMRI)
+
+        for i in range(struct_in.shape[0]):
+            after_UNet_struct = struct_out[i, :, :]
+            before_UNet_struct = struct_in[i, :, :]
+            before_UNet_struct = (before_UNet_struct - before_UNet_struct.min()) / (before_UNet_struct.max() - before_UNet_struct.min())
+
+            self.loss += self.mean_squared_error(after_UNet_struct, before_UNet_struct)
+        
+        self.loss /= (10*fMRI_in.shape[0])
+            
+        return self.loss
         
 class Percept_Loss(nn.Module):
     def __init__(self,**kwargs):

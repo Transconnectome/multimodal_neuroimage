@@ -29,7 +29,7 @@ def get_arguments(base_path):
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('--exp_name', type=str,default="baseline") 
-    parser.add_argument('--dataset_name', type=str, choices=['hcp', 'fMRI_image', 'fMRI_timeseries', 'DTI', 'sMRI', 'struct', 'DTI+sMRI', 'multimodal'], default="fMRI_timeseries")
+    parser.add_argument('--dataset_name', type=str, choices=['hcp', 'fMRI_image', 'fMRI_timeseries', 'DTI', 'sMRI', 'struct', 'DTI+sMRI', 'multimodal', 'multimodal_prs'], default="fMRI_timeseries")
     parser.add_argument('--fmri_type', type=str, choices=['timeseries', 'frequency', 'divided_frequency', 'time_domain_low', 'time_domain_ultralow', 'frequency_domain_low', 'frequency_domain_ufltralow', 'timeseries_and_frequency'], default="timeseries")
     parser.add_argument('--intermediate_vec', type=int, choices=[84, 48, 22], default=84)
     parser.add_argument('--fmri_image_path', default='/storage/bigdata/ABCD/fmriprep/1.rs_fmri/6.masked_image') ## lab server
@@ -37,6 +37,7 @@ def get_arguments(base_path):
     parser.add_argument('--dti_path', default='./data/dti') ## lab server
     parser.add_argument('--hcp_path', default='/scratch/connectome/stellasybae/lowfreqBERT/data/hcp1200/hcp_tc_npy_22')## lab server
     parser.add_argument('--smri_path', default='./data/smri_cortical_thickness') ## lab server
+    parser.add_argument('--prs_path', default='./data/prs') ## lab server
     parser.add_argument('--dti+smri_path', default='./data/dti+smri') ## lab server
     parser.add_argument('--base_path', default=base_path)
     parser.add_argument('--step', default='1', choices=['1','2','3','4','5','6'], help='which step you want to run')
@@ -44,7 +45,7 @@ def get_arguments(base_path):
     parser.add_argument('--voxel_norm_dir', default='per_voxel_normalize', type=str, choices=['per_voxel_normalize','per_voxel_normalize_no_nan', 'global_norm_only'])
     
     
-    parser.add_argument('--target', type=str, default='sex', choices=['sex','age','ASD_label','ADHD_label','nihtbx_totalcomp_uncorrected','nihtbx_fluidcomp_uncorrected'],help='fine_tune_task must be specified as follows -- {sex:classification, age:regression, ASD_label:classification, ADHD_label:classification, nihtbx_***:regression}')
+    parser.add_argument('--target', type=str, default='sex', choices=['sex','age','ASD_label','ADHD_label','nihtbx_totalcomp_uncorrected','nihtbx_fluidcomp_uncorrected', 'ADHD_label_robust', 'BMI'],help='fine_tune_task must be specified as follows -- {sex:classification, age:regression, ASD_label:classification, ADHD_label:classification, nihtbx_***:regression}')
     parser.add_argument('--fine_tune_task',
                         default='binary_classification',
                         choices=['regression','binary_classification'],
@@ -65,8 +66,8 @@ def get_arguments(base_path):
     
     parser.add_argument('--reconstruction_factor', default=1)
     parser.add_argument('--transformer_hidden_layers', type=int,default=16)
-    parser.add_argument('--transformer_num_attention_heads',type=int, default=16)
-    parser.add_argument('--transformer_emb_size',type=int ,default=2640)
+    #parser.add_argument('--transformer_num_attention_heads',type=int, default=16) # 안 쓰는 듯 함
+    #parser.add_argument('--transformer_emb_size',type=int ,default=2640) # 얘도 안 씀
     parser.add_argument('--train_split', default=0.7)
     parser.add_argument('--val_split', default=0.15)
     parser.add_argument('--running_mean_size', default=5000)
@@ -97,7 +98,7 @@ def get_arguments(base_path):
     
     # multimodality options
     parser.add_argument('--fmri_multimodality_type', default='cross_attention', choices=['cross_attention','two_channels'])
-    parser.add_argument('--multimodality_type', default='add', choices=['add','cross_attention', 'transfer'])
+    parser.add_argument('--multimodality_type', choices=['add','cross_attention', 'transfer'])
     
     
     # optuna related 
@@ -109,6 +110,9 @@ def get_arguments(base_path):
     parser.add_argument('--n_warmup_steps', default=5, help='argument for MedianPruner, epoch is same as step in our code. Pruning is disabled until the trial exceeds the given number of step. Note that this feature assumes that step starts at zero.')
     parser.add_argument('--interval_steps', default=1, help='argument for MedianPruner, Interval in number of steps between the pruning checks, offset by the warmup steps. If no value has been reported at the time of a pruning check, that particular check will be postponed until a value is reported.')
     
+    #wandb related
+    parser.add_argument('--wandb_key', default='108101f4b9c3e31a235aa58307d1c6b548cfb54a', type=str,  help='default: key for Stella')
+    parser.add_argument('--wandb_mode', default='online', type=str,  help='online|offline')
     
     # optuna related - config for hyperparameter (script 단에서 조절할 수 있도록 함)
     
@@ -118,10 +122,6 @@ def get_arguments(base_path):
     parser.add_argument('--hyp_lr_init', action='store_true')
     parser.add_argument('--hyp_lr_init_min', default=1e-5)
     parser.add_argument('--hyp_lr_init_ceil', default=1e-3)
-
-    parser.add_argument('--hyp_seq_len', action='store_true')
-    parser.add_argument('--hyp_seq_len_range_small', default=10)
-    parser.add_argument('--hyp_seq_len_range_big', default=20)
 
     parser.add_argument('--hyp_dropout', action='store_true')
     parser.add_argument('--hyp_dropout_range_small', default=0.1)
@@ -143,8 +143,22 @@ def get_arguments(base_path):
     parser.add_argument('--hyp_weight_decay_min', default=1e-5)
     parser.add_argument('--hyp_weight_decay_ceil', default=1e-2)
     
+    # for xgboost
+    parser.add_argument('--hyp_min_child_weight', action='store_true')
+    parser.add_argument('--hyp_min_child_weight_small', default=1)
+    parser.add_argument('--hyp_min_child_weight_big', default=7)    
+    
+    parser.add_argument('--hyp_max_depth', action='store_true')
+    parser.add_argument('--hyp_max_depth_small', default=3)
+    parser.add_argument('--hyp_max_depth_big', default=10)
+    
+    parser.add_argument('--hyp_gamma_xgboost', action='store_true')
+    parser.add_argument('--hyp_gamma_xgboost_min', default=0.0)
+    parser.add_argument('--hyp_gamma_xgboost_ceil', default=0.4)    
     
     # lowfreqBERT
+    
+    
     # Model Options
     parser.add_argument('--feature_map_gen', default='convolution_ul+l', choices=['convolution_ul+l','convolution_ul', 'no', 'resample'], help='how to generate feature map: convolution_ul+l|convolution_ul|no')
     parser.add_argument('--feature_map_size', default='same', choices=['same','different'], help='size of feature map: same|different')
@@ -241,6 +255,7 @@ def get_arguments(base_path):
     parser.add_argument('--drop_rate', type=float, default=0.0)
     parser.add_argument('--attn_drop_rate', type=float, default=0.0)
     parser.add_argument('--VIT_name', type=str, default='vit', choices = ['vit', 'swinv2'])
+    
 
     
     ##phase 4 (test)
@@ -277,6 +292,12 @@ def get_arguments(base_path):
     parser.add_argument('--workers_phase5', type=int,default=4)
     parser.add_argument('--patch_size_phase5', type=int, default=4)
     parser.add_argument('--use_FC', default=False)
+    parser.add_argument('--use_unet_loss', action='store_true')
+    parser.add_argument('--use_unet_function', action='store_true')
+    parser.add_argument('--use_unet_struct', action='store_true')
+    parser.add_argument('--use_prs', action='store_true')
+    parser.add_argument('--prs_unsqueeze', default='convolution', choices=['single_convolution','multiple_convolution', 'repeat'])
+
 
     ##phase 6 MultiVIT
     parser.add_argument('--task_phase6', type=str, default='SwinFusion')
@@ -293,7 +314,10 @@ def get_arguments(base_path):
     parser.add_argument('--lr_warmup_phase6', type=int, default=500)
     parser.add_argument('--sequence_length_phase6', type=int ,default=368) # 원래는 1이었음~
     parser.add_argument('--workers_phase6', type=int,default=4)
+    parser.add_argument('--use_vae', action='store_true')
+    parser.add_argument('--use_unet', action='store_true')
     #parser.add_argument('--embed_dim_mult', type=int, default=24)
+    
     
     args = parser.parse_args()
     if args.voxel_norm_dir == 'global_norm_only':

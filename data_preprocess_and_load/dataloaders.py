@@ -44,6 +44,8 @@ class DataHandler():
             return ABCD_DTI_sMRI
         elif self.dataset_name == 'multimodal':
             return ABCD_multimodal
+        elif self.dataset_name == 'multimodal_prs':
+            return ABCD_multimodal_prs
         else:
             raise NotImplementedError
 

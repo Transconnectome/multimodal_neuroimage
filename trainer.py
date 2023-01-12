@@ -6,7 +6,8 @@ import torch
 import warnings
 import numpy as np
 from tqdm import tqdm
-from model import Transformer_Net, MULTModel, SwinTransformerV2, Func_Struct_Add, Func_Struct_Transfer, Func_Struct_Cross, Transformer_Net_Two_Channels, SwinFusion
+from model import *
+#Transformer_Net, MULTModel, SwinTransformerV2, Func_Struct_Add, Func_Struct_Transfer, Func_Struct_Cross, Transformer_Net_Two_Channels, SwinFusion, SwinTransformerV2_VAE, SwinTransformerV2_UNet, Func_Struct_UNet_Cross, Func_Struct_UNet_Add
 from losses import get_intense_voxels
 import time
 import pathlib
@@ -24,10 +25,8 @@ import builtins
 from torch.cuda.amp import autocast
 from torch.cuda.amp import GradScaler
 
-# ASP
-#from apex.contrib.sparsity import ASP
-
-#from apex.optimizers import FusedAdam
+# wandb
+import wandb
 
 
 class Trainer():
@@ -42,6 +41,7 @@ class Trainer():
         self.fmri_type = kwargs.get('fmri_type')
         self.fmri_multimodality_type  = kwargs.get('fmri_multimodality_type')
         self.dataset_name = kwargs.get('dataset_name')
+        self.use_vae = kwargs.get('use_vae')
         self.eval_iter = 0
         self.batch_index = None
         self.best_loss = 100000
@@ -82,6 +82,13 @@ class Trainer():
 
         self.writer = Writer(sets,**kwargs) #여기서 이미 writer class를 불러옴.
         self.sets = sets
+        
+        #wandb
+
+        os.environ["WANDB_API_KEY"] = kwargs.get('wandb_key')
+        os.environ["WANDB_MODE"] = kwargs.get('wandb_mode')
+        wandb.init(project='multimodality',entity='stellasybae',reinit=True, name=self.experiment_title, config=kwargs)
+        wandb.watch(self.model,log='all',log_freq=10)
         
         self.nan_list = []
 
@@ -189,14 +196,30 @@ class Trainer():
                     self.model = VIT(**self.kwargs)
                 elif self.VIT_name == 'swinv2':
                     print('Swin transformer v2 !!')
-                    self.model = SwinTransformerV2(**self.kwargs)
+                    if self.use_vae == True:
+                        self.model = SwinTransformerV2_VAE(**self.kwargs)
+                    elif self.use_unet == True:
+                        self.model = SwinTransformerV2_UNet(**self.kwargs)
+                    else:
+                        self.model = SwinTransformerV2(**self.kwargs)
             elif self.dataset_name in ['struct']:
                 self.model = SwinFusion(**self.kwargs)
-            elif self.dataset_name in ['multimodal']:
+            elif 'multimodal' in self.dataset_name:
                 if self.multimodality_type == 'add':
-                    self.model = Func_Struct_Add(**self.kwargs)
+                    if self.use_unet == True:
+                        self.model = Func_Struct_UNet_Add(**self.kwargs)
+                    else:
+                        self.model = Func_Struct_Add(**self.kwargs)
                 elif self.multimodality_type == 'cross_attention':
-                    self.model = Func_Struct_Cross(**self.kwargs)
+                    if self.use_unet == True:
+                        if self.use_prs == True:
+                            self.model = Func_Struct_UNet_Cross_PRS(**self.kwargs)
+                        else:
+                            self.model = Func_Struct_UNet_Cross(**self.kwargs)
+                    else:
+                        self.model = Func_Struct_Cross(**self.kwargs)
+                elif self.multimodality_type == 'transfer':
+                    self.model = Func_Struct_Transfer(**self.kwargs)
         elif self.task.lower() == '2dbert':
             print('2DBERT!!!')
             self.model = Transformer_Net(**self.kwargs)
@@ -206,7 +229,12 @@ class Trainer():
                 self.model = VIT(**self.kwargs)
             elif self.VIT_name == 'swinv2':
                 print('Swin transformer v2 !!')
-                self.model = SwinTransformerV2(**self.kwargs)
+                if self.use_vae == True:
+                    self.model = SwinTransformerV2_VAE(**self.kwargs)
+                elif self.use_unet == True:
+                    self.model = SwinTransformerV2_UNet(**self.kwargs)
+                else:
+                    self.model = SwinTransformerV2(**self.kwargs)
         elif self.task.lower() == 'lowfreqbert':
             if self.fmri_multimodality_type == 'cross_attention':
                 print('lowfreqBERT - Cross Attention!!!')
@@ -217,11 +245,20 @@ class Trainer():
         elif self.task.lower() == 'funcstruct':
             print('Func Struct model is running!')
             if self.multimodality_type == 'add':
-                self.model = Func_Struct_Add(**self.kwargs)
+                if self.use_unet == True:
+                    self.model = Func_Struct_UNet_Add(**self.kwargs)
+                else:
+                    self.model = Func_Struct_Add(**self.kwargs)
             elif self.multimodality_type == 'transfer':
                 self.model = Func_Struct_Transfer(**self.kwargs)
             elif self.multimodality_type == 'cross_attention':
-                self.model = Func_Struct_Cross(**self.kwargs)
+                if self.use_unet == True:
+                    if self.use_prs == True:
+                        self.model = Func_Struct_UNet_Cross_PRS(**self.kwargs)
+                    else:
+                        self.model = Func_Struct_UNet_Cross(**self.kwargs)
+                else:
+                    self.model = Func_Struct_Cross(**self.kwargs)
         elif self.task.lower() == 'swinfusion':
             print('SwinFusion for DTI and sMRI!!')
             self.model = SwinFusion(**self.kwargs)
@@ -270,13 +307,22 @@ class Trainer():
             self.writer.loss_summary(lr=self.optimizer.param_groups[0]['lr'])
             self.writer.accuracy_summary(mid_epoch=True)
             self.writer.save_history_to_csv()
+            
+            self.writer.register_wandb(epoch, lr=self.optimizer.param_groups[0]['lr'])
+            
             if self.use_optuna == False:
                 self.save_checkpoint_(epoch, len(self.train_loader), self.scaler) 
             if self.use_optuna:
-                val_AUROC = self.get_last_AUROC()
-                if val_AUROC > self.best_AUROC:
-                    self.best_AUROC = val_AUROC
-                self.trial.report(val_AUROC, step=epoch-1)
+                if 'classification' in self.kwargs.get('fine_tune_task'):
+                    val_AUROC = self.get_last_AUROC()
+                    if val_AUROC > self.best_AUROC:
+                        self.best_AUROC = val_AUROC
+                    self.trial.report(val_AUROC, step=epoch-1)
+                elif 'regression' in self.kwargs.get('fine_tune_task'):
+                    val_loss = self.get_last_loss()
+                    if val_loss < self.best_loss:
+                        self.best_loss = val_loss
+                    self.trial.report(val_loss, step=epoch-1)
                 if self.trial.should_prune():
                     raise optuna.exceptions.TrialPruned()
                 # else:
@@ -330,7 +376,9 @@ class Trainer():
                 loss = loss / self.accumulation_steps # gradient accumulation - loss가 안 주는 게 문제.
                 
                 torch.cuda.nvtx.range_push("backward pass")
+                
                 self.scaler.scale(loss).backward()
+                
                 
                 torch.cuda.nvtx.range_pop()
                 
@@ -341,7 +389,7 @@ class Trainer():
                         self.scaler.unscale_(self.optimizer)
                         torch.cuda.nvtx.range_pop()
                         torch.cuda.nvtx.range_push("gradient_clipping")
-                        print('executing gradient clipping')
+                        #print('executing gradient clipping')
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1, error_if_nonfinite=False)
                         torch.cuda.nvtx.range_pop()
                     
@@ -426,17 +474,44 @@ class Trainer():
         input_dict = {k:(v.to(self.gpu) if (self.cuda and torch.is_tensor(v)) else v) for k,v in input_dict.items()}
         if self.task.lower() in ['funcstruct', 'test']:
             if self.multimodality_type in ['cross_attention']:
-                output_dict = self.model(input_dict['fmri_raw_sequence'], input_dict['fmri_lowfreq_sequence'], input_dict['fmri_ultralowfreq_sequence'], input_dict['struct'])
+                if self.use_prs:
+                    output_dict = self.model(input_dict['fmri_raw_sequence'], input_dict['fmri_lowfreq_sequence'], input_dict['fmri_ultralowfreq_sequence'], input_dict['struct'], input_dict['prs'])
+                else:
+                    output_dict = self.model(input_dict['fmri_raw_sequence'], input_dict['fmri_lowfreq_sequence'], input_dict['fmri_ultralowfreq_sequence'], input_dict['struct'])
             elif self.multimodality_type in ['add']:
                 output_dict = self.model(input_dict['fmri_lowfreq_sequence'], input_dict['fmri_ultralowfreq_sequence'], input_dict['struct'])
             elif self.multimodality_type == 'transfer':
                 output_dict = self.model(input_dict['fmri_lowfreq_sequence'], input_dict['fmri_ultralowfreq_sequence'])
+            else:
+                # no multimodality
+                if self.dataset_name in ['fMRI_timeseries', 'hcp']:
+                    if self.fmri_type in ['timeseries', 'frequency', 'time_domain_low', 'time_domain_ultralow', 'frequency_domain_low', 'frequency_domain_ultralow']:
+                        output_dict = self.model(input_dict['fmri_sequence'])
+                    elif self.fmri_type in ['divided_frequency', 'timeseries_and_frequency']:
+                        if self.fmri_multimodality_type == 'cross_attention':
+                            output_dict = self.model(input_dict['fmri_lowfreq_sequence'], input_dict['fmri_ultralowfreq_sequence'])
+                        elif self.fmri_multimodality_type == 'two_channels':
+                            output_dict = self.model(input_dict['fmri_sequence'], input_dict['fmri_lowfreq_sequence'], input_dict['fmri_ultralowfreq_sequence'])
+                elif self.dataset_name == 'DTI':
+                    ## swinv2
+                    output_dict = self.model(input_dict['dti'])
+                elif self.dataset_name == 'sMRI':
+                    ## swinv2
+                    output_dict = self.model(input_dict['smri'])
+                elif self.dataset_name == 'DTI+sMRI':
+                    ## swinv2
+                    output_dict = self.model(input_dict['struct'])   
+                elif self.dataset_name =='struct':
+                    output_dict = self.model(input_dict['smri'], input_dict['dti'])
         else:
             if self.dataset_name in ['fMRI_timeseries', 'hcp']:
                 if self.fmri_type in ['timeseries', 'frequency', 'time_domain_low', 'time_domain_ultralow', 'frequency_domain_low', 'frequency_domain_ultralow']:
                     output_dict = self.model(input_dict['fmri_sequence'])
                 elif self.fmri_type in ['divided_frequency', 'timeseries_and_frequency']:
-                    output_dict = self.model(input_dict['fmri_sequence'], input_dict['fmri_lowfreq_sequence'], input_dict['fmri_ultralowfreq_sequence'])
+                    if self.fmri_multimodality_type == 'cross_attention':
+                        output_dict = self.model(input_dict['fmri_lowfreq_sequence'], input_dict['fmri_ultralowfreq_sequence'])
+                    elif self.fmri_multimodality_type == 'two_channels':
+                        output_dict = self.model(input_dict['fmri_sequence'], input_dict['fmri_lowfreq_sequence'], input_dict['fmri_ultralowfreq_sequence'])
             elif self.dataset_name == 'DTI':
                 ## swinv2
                 output_dict = self.model(input_dict['dti'])
@@ -468,7 +543,7 @@ class Trainer():
                 if current_loss_value.isnan().sum() > 0:
                     warnings.warn('found nans in computation')
                     print('at {} loss'.format(loss_name))
-                    if self.task.lower() not in ['funcstruct', 'multvit']:
+                    if self.task.lower() not in ['funcstruct', 'multvit', 'vit']:
                         self.nan_list+=np.array(input_dict['subject_name'])[(output_dict['reconstructed_fmri_sequence'].reshape(output_dict['reconstructed_fmri_sequence'].shape[0],-1).isnan().sum(axis=1).detach().cpu().numpy() > 0)].tolist()
                     else:
                         self.nan_list+=np.array(input_dict['subject_name'])[(output_dict[self.fine_tune_task].reshape(output_dict[self.fine_tune_task].shape[0],-1).isnan().sum(axis=1).detach().cpu().numpy() > 0)].tolist()
@@ -476,11 +551,14 @@ class Trainer():
                 
                 lamda = current_loss_dict['factor']
                 factored_loss = current_loss_value * lamda
+                
                 final_loss_dict[loss_name] = factored_loss.item()
                 final_loss_value += factored_loss
+        
         final_loss_dict['total'] = final_loss_value.item()
-#         with open("conv_nan_sub_list.txt", mode="w") as file:
+#         with open("vit_vae_nan_sub_list.txt", mode="w") as file:
 #             file.write('\n'.join(self.nan_list))
+        
         return final_loss_dict, final_loss_value
 
 
@@ -508,7 +586,7 @@ class Trainer():
 
     def get_last_loss(self):
         if self.kwargs.get('fine_tune_task') == 'regression': #self.model.task
-            return self.writer.val_MAE[-1]
+            return self.writer.val_MSE[-1]
         else:
             return self.writer.total_val_loss_history[-1]
 
@@ -540,6 +618,8 @@ class Trainer():
             'amp_state': amp_state}
         if AUROC is not None:
             ckpt_dict['AUROC'] = AUROC
+        if loss is not None:
+            ckpt_dict['MSE'] = loss # Stella added it!
         if self.lr_handler.schedule is not None:
             ckpt_dict['schedule_state_dict'] = self.lr_handler.schedule.state_dict()
             ckpt_dict['lr'] = self.optimizer.param_groups[0]['lr']
@@ -604,6 +684,10 @@ class Trainer():
         merge_loss = self.merge_loss_func(output_dict['processed_raw'], output_dict['embedding_per_ROIs'])
         return merge_loss
     
+    def compute_unet(self, input_dict, output_dict):
+        unet_loss = self.unet_loss_func(output_dict['fMRI_input'], output_dict['fMRI_output'],
+                                         output_dict['struct_input'], output_dict['struct_output'])
+        return unet_loss
     
     def compute_mask(self, input_dict, output_dict):
         '''
@@ -613,9 +697,16 @@ class Trainer():
         return mask_loss
 
     def compute_binary_classification(self,input_dict,output_dict):
-        binary_loss = self.binary_classification_loss_func(output_dict['binary_classification'].squeeze(), input_dict[self.target].squeeze().float()) # BCEWithLogitsLoss
+        if self.task.lower() == 'funcstruct':
+            if self.multimodality_type == 'cross_attention':
+                if self.use_unet == True:
+                    if self.use_unet_loss == True:
+                        binary_loss = self.binary_classification_loss_func(output_dict['binary_classification']['binary_classification'].squeeze(), input_dict[self.target].squeeze().float())
+                    else:
+                        binary_loss = self.binary_classification_loss_func(output_dict['binary_classification'].squeeze(), input_dict[self.target].squeeze().float()) # BCEWithLogitsLoss
+        else:
+            binary_loss = self.binary_classification_loss_func(output_dict['binary_classification'].squeeze(), input_dict[self.target].squeeze().float()) # BCEWithLogitsLoss
         #self.binary_classification_loss_func(output_dict['binary_classification'].squeeze(), input_dict['subject_binary_classification'].squeeze())
-        
         return binary_loss
 
     def compute_regression(self,input_dict,output_dict):
@@ -625,7 +716,15 @@ class Trainer():
     def compute_accuracy(self,input_dict,output_dict):
         task = self.kwargs.get('fine_tune_task') #self.model.task
         #print('in compute accuracy function, task is:', task) # need to be 'binary classification'
-        out = output_dict[task].detach().clone().cpu()
+        if self.task.lower() == 'funcstruct':
+            if self.multimodality_type == 'cross_attention':
+                if self.use_unet == True:
+                    if self.use_unet_loss:
+                        out = output_dict[task][task].detach().clone().cpu()
+                    else:
+                        out = output_dict[task].detach().clone().cpu()
+        else:
+            out = output_dict[task].detach().clone().cpu()
         #print(out)
         score = out.squeeze() if out.shape[0] > 1 else out
         labels = input_dict[self.target].clone().cpu() # input_dict['subject_' + task].clone().cpu()

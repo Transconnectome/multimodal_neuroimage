@@ -1,5 +1,5 @@
 from torch.nn import MSELoss,L1Loss,BCELoss, BCEWithLogitsLoss, Sigmoid
-from losses import Percept_Loss, Cont_Loss, Mask_Loss, Merge_Loss
+from losses import Percept_Loss, Cont_Loss, Mask_Loss, Merge_Loss, UNet_Loss
 import csv
 import os
 from torch.utils.tensorboard import SummaryWriter
@@ -8,6 +8,9 @@ import numpy as np
 from itertools import zip_longest
 from metrics import Metrics
 import torch
+
+import wandb
+import time
 
 class Writer():
     """
@@ -18,6 +21,7 @@ class Writer():
         self.register_losses(**kwargs)
         self.create_score_folders()
         self.metrics = Metrics()
+        self.current_metrics = {}
         self.sets = sets
         self.total_train_steps = 0
         self.eval_iter = 0
@@ -82,6 +86,7 @@ class Writer():
             
             truth_all_sets[subj_mode].append(subj_truth)
         for (name,pred),(_,truth) in zip(pred_all_sets.items(),truth_all_sets.items()):
+            sigmoid = Sigmoid()
             if len(pred) == 0:
                 continue
             if self.fine_tune_task == 'regression':
@@ -89,26 +94,43 @@ class Writer():
                 metrics[name + '_MSE'] = self.metrics.MSE(truth,pred)
                 metrics[name +'_NMSE'] = self.metrics.NMSE(truth,pred)
             else:
-                sigmoid = Sigmoid()
+                
                 metrics[name + '_Balanced_Accuracy'] = self.metrics.BAC(truth,[x>0.5 for x in sigmoid(torch.Tensor(pred))])
                 metrics[name + '_Regular_Accuracy'] = self.metrics.RAC(truth,[x>0.5 for x in sigmoid(torch.Tensor(pred))])
                 metrics[name + '_AUROC'] = self.metrics.AUROC(truth,pred)
-
+            self.current_metrics = metrics
+            
         for name,value in metrics.items():
-            self.scalar_to_tensorboard(name,value) #여기서 tf events 파일이 오는구나?^^
+            self.scalar_to_tensorboard(name,value)
             if hasattr(self,name):
                 l = getattr(self,name)
                 l.append(value)
                 setattr(self,name,l)
             else:
                 setattr(self, name, [value])
-            print('{}: {}'.format(name,value)) # 여기서 프린트가 될 텐데...
+            print('{}: {}'.format(name,value))
         self.eval_iter += 1
         if mid_epoch and len(self.subject_accuracy) > 0:
             self.subject_accuracy = {k: v for k, v in self.subject_accuracy.items() if v['mode'] == 'train'}
         else:
             self.subject_accuracy = {}
 
+    def register_wandb(self,epoch, lr):
+        wandb_result = {}
+        wandb_result['epoch'] = epoch
+        wandb_result['learning_rate'] = lr
+
+        #losses 
+        loss_d = self.append_total_to_losses() 
+        for name, loss_dict in loss_d.items():
+            # name : perceptual, reconstruction, ...
+            if loss_dict['is_active']:
+                for set in self.sets:
+                    title = name + '_' + set
+                    wandb_result[f'{title}_loss_history'] = getattr(self,title + '_loss_history')[-1]
+        #accuracy
+        wandb_result.update(self.current_metrics)
+        wandb.log(wandb_result)
 
     def write_losses(self,final_loss_dict,set):
         for loss_name,loss_value in final_loss_dict.items():
@@ -128,6 +150,8 @@ class Writer():
     def register_losses(self,**kwargs):
         self.losses = {'intensity':
                            {'is_active':False,'criterion':L1Loss(),'thresholds':[0.9, 0.99],'factor':kwargs.get('intensity_factor')},
+                       'unet':
+                           {'is_active':False, 'criterion':UNet_Loss(**kwargs), 'factor':1},
                        'perceptual':
                            {'is_active':False,'criterion': Percept_Loss(**kwargs),'factor':kwargs.get('perceptual_factor')},
                        'reconstruction':
@@ -141,7 +165,7 @@ class Writer():
                        'binary_classification':
                            {'is_active':False,'criterion': BCEWithLogitsLoss(),'factor':1}, #originally BCELoss(). Stella changed it
                        'regression':
-                           {'is_active':False,'criterion':MSELoss(),'factor':1}}  #changed from L1Loss to MSELoss 
+                           {'is_active':False,'criterion':L1Loss(),'factor':1}}  #changed from L1Loss to MSELoss and changed to L1loss again
         if 'reconstruction' in kwargs.get('task').lower():
             self.losses['perceptual']['is_active'] = True
             self.losses['reconstruction']['is_active'] = True
@@ -152,6 +176,8 @@ class Writer():
         elif kwargs.get('task').lower() in ['lowfreqbert', '2dbert', 'funcstruct']:
             if kwargs.get('use_merge_loss'):
                 self.losses['merge']['is_active'] = True
+            if kwargs.get('use_unet_loss'):
+                self.losses['unet']['is_active'] = True
             if kwargs.get('fine_tune_task').lower() == 'regression':
                 self.losses['regression']['is_active'] = True
             else:
