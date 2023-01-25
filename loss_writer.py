@@ -16,13 +16,14 @@ class Writer():
     """
     main class to handle logging the results, both to tensorboard and to a local csv file # so where is csv file..^^?
     """
-    def __init__(self,sets,**kwargs):
+    def __init__(self,sets,val_threshold,**kwargs):
         self.register_args(**kwargs)
         self.register_losses(**kwargs)
         self.create_score_folders()
         self.metrics = Metrics()
         self.current_metrics = {}
         self.sets = sets
+        self.val_threshold = val_threshold
         self.total_train_steps = 0
         self.eval_iter = 0
         self.subject_accuracy = {}
@@ -40,7 +41,7 @@ class Writer():
         self.tensorboard_dir = Path(os.path.join(self.log_dir, self.experiment_title))
         self.csv_path = os.path.join(self.experiment_folder, 'history')
         os.makedirs(self.csv_path, exist_ok=True)
-        if self.task == 'fine_tune' or 'bert':
+        if self.task == 'fine_tune' or 'bert' or 'test':
             self.per_subject_predictions = os.path.join(self.experiment_folder, 'per_subject_predictions')
             os.makedirs(self.per_subject_predictions, exist_ok=True)
 
@@ -76,15 +77,23 @@ class Writer():
         truth_all_sets = {x:[] for x in self.sets}
         metrics = {}
         for subj_name,subj_dict in self.subject_accuracy.items():
-            subj_pred = subj_dict['score'].mean().item()
+            
+            if self.fine_tune_task == 'binary_classification':
+                subj_dict['score'] = torch.sigmoid(subj_dict['score'].float())
+
+            # subj_dict['score'] denotes the logits for sequences for a subject
+            subj_pred = subj_dict['score'].mean().item() 
             subj_error = subj_dict['score'].std().item()
+
             subj_truth = subj_dict['truth'].item()
-            subj_mode = subj_dict['mode']
+            subj_mode = subj_dict['mode'] # train, val, test
+
             with open(os.path.join(self.per_subject_predictions,'iter_{}.txt'.format(self.eval_iter)),'a+') as f:
                 f.write('subject:{} ({})\noutputs: {:.4f}\u00B1{:.4f}  -  truth: {}\n'.format(subj_name,subj_mode,subj_pred,subj_error,subj_truth))
-            pred_all_sets[subj_mode].append(subj_pred)
-            
+            pred_all_sets[subj_mode].append(subj_pred) # don't use std in computing AUROC, ACC
             truth_all_sets[subj_mode].append(subj_truth)
+            
+
         for (name,pred),(_,truth) in zip(pred_all_sets.items(),truth_all_sets.items()):
             sigmoid = Sigmoid()
             if len(pred) == 0:
@@ -93,12 +102,15 @@ class Writer():
                 metrics[name + '_MAE'] = self.metrics.MAE(truth,pred)
                 metrics[name + '_MSE'] = self.metrics.MSE(truth,pred)
                 metrics[name +'_NMSE'] = self.metrics.NMSE(truth,pred)
-            else:
+                metrics[name + '_R2_score'] = self.metrics.R2_score(truth,pred)
                 
-                metrics[name + '_Balanced_Accuracy'] = self.metrics.BAC(truth,[x>0.5 for x in sigmoid(torch.Tensor(pred))])
-                metrics[name + '_Regular_Accuracy'] = self.metrics.RAC(truth,[x>0.5 for x in sigmoid(torch.Tensor(pred))])
+            else:
+                metrics[name + '_Balanced_Accuracy'] = self.metrics.BAC(truth,[x>0.5 for x in torch.Tensor(pred)])
+                metrics[name + '_Regular_Accuracy'] = self.metrics.RAC(truth,[x>0.5 for x in torch.Tensor(pred)]) # Stella modified it
                 metrics[name + '_AUROC'] = self.metrics.AUROC(truth,pred)
+                metrics[name+'_best_bal_acc'], metrics[name + '_best_threshold'],metrics[name + '_gmean'],metrics[name + '_specificity'],metrics[name + '_sensitivity'],metrics[name + '_f1_score'] = self.metrics.ROC_CURVE(truth,pred,name,self.val_threshold)
             self.current_metrics = metrics
+            
             
         for name,value in metrics.items():
             self.scalar_to_tensorboard(name,value)

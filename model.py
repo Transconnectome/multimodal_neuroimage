@@ -23,6 +23,7 @@ class BaseModel(nn.Module, ABC):
         self.best_loss = 1000000
         #self.best_accuracy = 0
         self.best_AUROC = 0
+        #self.init_weights()
     @abstractmethod
     def forward(self, x):
         pass
@@ -30,7 +31,25 @@ class BaseModel(nn.Module, ABC):
     @property
     def device(self):
         return next(self.parameters()).device
+    
+    ## Stella added init weights
+#     def init_weights (self):
+#         # track all layers
+#         for m in self.modules():
+#             if isinstance(m, nn.Conv2d):
+#                 nn.init.kaiming_uniform_(m.weight)
 
+#                 if m.bias is not None:
+#                     nn.init.constant_(m.bias, 0)
+#             elif isinstance(m, nn.BatchNorm2d):
+#                 nn.init.constant_(m.weight, 1)
+#                 nn.init.constant_(m.bias, 0)
+
+#             elif isinstance(m, nn.Linear):
+#                 nn.init.kaiming_uniform_(m.weight)
+#                 nn.init.constant_(m.bias, 0)
+    
+    
     def register_vars(self,**kwargs):
         intermediate_vec = kwargs.get('intermediate_vec') # embedding size(h) 
         self.transformer_dropout_rate = kwargs.get('transformer_dropout_rate')
@@ -39,7 +58,7 @@ class BaseModel(nn.Module, ABC):
             if kwargs.get('fmri_type') == 'divided_frequency':
                 self.BertConfig = BertConfig(hidden_size=intermediate_vec, vocab_size=1,
                              num_hidden_layers=kwargs.get('transformer_hidden_layers'),
-                             num_attention_heads=kwargs.get('num_heads_2DBert'), max_position_embeddings=kwargs.get('sequence_length')+1,
+                             num_attention_heads=kwargs.get('num_heads_mult'), max_position_embeddings=kwargs.get('sequence_length')+1,
                              hidden_dropout_prob=self.transformer_dropout_rate)
             else:
                 self.BertConfig = BertConfig(hidden_size=intermediate_vec, vocab_size=1,
@@ -51,7 +70,7 @@ class BaseModel(nn.Module, ABC):
                                          num_hidden_layers=kwargs.get('transformer_hidden_layers'),
                                          num_attention_heads=16, max_position_embeddings=30,
                                          hidden_dropout_prob=self.transformer_dropout_rate)
-
+        # remove VIT and will not use this one
         elif kwargs.get('dataset_name') in ['DTI', 'sMRI']:
             vit_max_pos_embed = (intermediate_vec // kwargs.get('patch_size')) ** 2 # 441
             self.BertConfig = BertConfig(hidden_size=intermediate_vec, vocab_size=1,
@@ -252,7 +271,21 @@ class Transformer_Net_Two_Channels(BaseModel):
         if self.concat_method == 'concat':
             self.proj_layer = nn.Linear(2*self.intermediate_vec, self.intermediate_vec) 
         self.regression_head = nn.Linear(self.intermediate_vec, self.label_num) #.to(memory_format=torch.channels_last_3d)
-
+        #self.apply(self._init_weights)
+    
+    # Stella added this function
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            #trunc_normal_(m.weight, std=.02)
+            nn.init.kaiming_normal_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        
+        
+        
     def forward(self, x, x_l, x_u):
         
 #         if self.dataset_name == 'fMRI_image':
@@ -305,14 +338,14 @@ class Transformer_Net_Two_Channels(BaseModel):
             ans_dict = {'embedding_per_ROIs': out_cls, self.task:prediction}
         return ans_dict
     
-class MULTModel(BaseModel):
+class Transformer_Net_Cross_Attention(BaseModel):
     def __init__(self, **kwargs):
         """
-        Construct a MulT model.
+        Construct a Transformer_Net_Cross_Attention model.
         """
-        super(MULTModel, self).__init__()
+        super(Transformer_Net_Cross_Attention, self).__init__()
         self.task = kwargs.get('fine_tune_task')
-        ## size of features : 48 
+        ## size of features : 84 
         self.orig_d_l, self.orig_d_u = kwargs.get('intermediate_vec'), kwargs.get('intermediate_vec')
         
         ## 그냥 embedding dimension.. 굳이 48일 필요는 없으나 난 필요한 게 있기 때문에..
@@ -479,10 +512,6 @@ class MULTModel(BaseModel):
                 last_h_z = last_hs = h_zs[-1]   # Take the last output for prediction  - torch.Size([1, 96])
                 out_cls = self.out_layer1(last_h_z) # torch.Size([1, 48])
             elif self.concat_method == 'hadamard':
-#                 h_zs = torch.empty(h_l_with_us.shape).to(h_l_with_us.device)
-#                 for i in range(h_l_with_us.shape[0]):
-#                     h_zs_ = torch.mul(h_l_with_us[i, :, :], h_u_with_ls[i, :, :]) # torch.Size([1, 1, 48]
-#                     h_zs[i, :, :] = h_zs_
                 h_zs = torch.mul(h_l_with_us, h_u_with_ls) # torch.Size([368, 1, 48] 
                 
                 # Transformer with self attention
@@ -523,161 +552,6 @@ class MULTModel(BaseModel):
         return {'embedding_per_ROIs': out_cls, self.task:pred}
 
      
-    
-# class MultVIT(BaseModel):
-#     def __init__(self, **kwargs):
-#         """
-#         Construct a MulTViT model.
-#         dti (84, 84) -> smri (84, 84)
-#         smri (84, 84) -> dti (84, 84)
-#         """
-#         super(MultVIT, self).__init__()
-#         self.task = kwargs.get('fine_tune_task')
-#         ## size of features : 84 
-#         self.orig_d_s, self.orig_d_d = kwargs.get('intermediate_vec'), kwargs.get('intermediate_vec')
-        
-#         ## 그냥 embedding dimension.. 굳이 84일 필요는 없으나 난 필요한 게 있기 때문에..
-#         self.d_s, self.d_d = kwargs.get('intermediate_vec'), kwargs.get('intermediate_vec')
-        
-#         self.num_heads_mult = kwargs.get('num_heads_mult')
-#         self.layers = kwargs.get('nlevels')
-#         self.attn_dropout = kwargs.get('attn_dropout')
-#         self.relu_dropout = kwargs.get('relu_dropout')
-#         self.res_dropout = kwargs.get('res_dropout')
-#         self.out_dropout = kwargs.get('out_dropout')
-#         self.embed_dropout = kwargs.get('embed_dropout')
-#         self.attn_mask = kwargs.get('attn_mask')
-#         self.fine_tune_task = kwargs.get('fine_tune_task')
-#         self.feature_map_gen = kwargs.get('feature_map_gen')
-#         self.feature_map_size = kwargs.get('feature_map_size')
-#         self.mixing = kwargs.get('mixing')
-#         self.feature_map_gen = kwargs.get('feature_map_gen')
-#         self.concat_method = kwargs.get('concat_method')
-#         self.patch_size = kwargs.get('patch_size')
-#         self.embed_dim_mult = kwargs.get('embed_dim_mult')
-#         combined_dim = 2 * self.embed_dim_mult 
-        
-#         if self.fine_tune_task == 'binary_classification':
-#             output_dim = 1
-#         # 1. Temporal Convolutional Layers
-# #         if self.feature_map_size == 'different':
-# #             if self.feature_map_gen == 'convolution_ul+l':
-# #                 self.proj_l = nn.Conv1d(self.sequence_length, self.sequence_length, kernel_size=1, padding=0, bias=False)
-# #                 self.proj_u = nn.Conv1d(self.sequence_length, self.sequence_length//2, kernel_size=1, padding=0, bias=False)
-# #             elif self.feature_map_gen == 'convolution_ul':
-# #                 #self.proj_l = nn.Conv1d(self.sequence_length, self.sequence_length, kernel_size=1, padding=0, bias=False)
-# #                 self.proj_u = nn.Conv1d(self.sequence_length, self.sequence_length//2, kernel_size=1, padding=0, bias=False)
-           
-# #         elif self.feature_map_size == 'same':
-# #             if self.feature_map_gen == 'convolution_ul+l':
-# #                 self.proj_l = nn.Conv1d(self.sequence_length, self.sequence_length, kernel_size=1, padding=0, bias=False)
-        
-#         # 2. Crossmodal Attentions
-#         self.trans_d_with_s = self.get_network(self_type='ds') # low to ultra low
-#         self.trans_s_with_d = self.get_network(self_type='sd') # ultra low to low
-        
-#         ## if feature map size different,
-#         # embed_size1 = 84//int(self.patch_size) # for dti & smri
-#         # embed_size2 = 4//int(self.patch_size) # for smri
-#         # embed_dti = int(embed_size1 ** 2)
-#         # embed_smri = int(embed_size1*embed_size2)
-#         # self.deconv =  nn.ConvTranspose1d(embed_smri, embed_dti, kernel_size=1, padding=0, bias=False)
-        
-#         # 3. Self Attentions (Could be replaced by LSTMs, GRUs, etc.)
-#         #    [e.g., self.trans_x_mem = nn.LSTM(self.d_x, self.d_x, 1)
-#         self.trans_mem = self.get_network(self_type='mem', layers=3) # self attention
-#         self.trans_d_mem = self.get_network(self_type='d_mem', layers=3)
-#         self.trans_s_mem = self.get_network(self_type='s_mem', layers=3)
-       
-#         # 4. make patch
-#         self.patch_embed_dti = nn.Conv2d(1, self.embed_dim_mult, kernel_size=self.patch_size, stride=self.patch_size)
-#         self.patch_embed_smri = nn.Conv2d(1, self.embed_dim_mult, kernel_size=self.patch_size, stride=self.patch_size)
-        
-#         # Projection layers
-#         self.proj1 = nn.Linear(combined_dim, combined_dim)
-#         self.proj2 = nn.Linear(combined_dim, combined_dim)
-#         self.out_layer1 = nn.Linear(combined_dim, combined_dim//2)
-#         self.out_layer2 = nn.Linear(combined_dim//2, output_dim)
-
-#     def get_network(self, self_type='ds', layers=-1):
-#         if self_type in ['ds']:
-#             embed_dim, attn_dropout = self.embed_dim_mult, self.attn_dropout
-#         elif self_type in ['sd']:
-#             embed_dim, attn_dropout = self.embed_dim_mult, self.attn_dropout
-#         elif self_type == 's_mem':
-#             embed_dim, attn_dropout = self.d_s, self.attn_dropout
-#         elif self_type == 'd_mem':
-#             embed_dim, attn_dropout = self.d_d, self.attn_dropout
-#         elif self_type == 'mem':
-#             embed_dim, attn_dropout = 2*self.embed_dim_mult, self.attn_dropout
-#         else:
-#             raise ValueError("Unknown network type")
-
-#         # embed dim -> 368 / 736
-#         return TransformerEncoder(embed_dim=embed_dim,
-#                                   num_heads_mult=self.num_heads_mult,
-#                                   layers=max(self.layers, layers),
-#                                   attn_dropout=attn_dropout,
-#                                   relu_dropout=self.relu_dropout,
-#                                   res_dropout=self.res_dropout,
-#                                   embed_dropout=self.embed_dropout,
-#                                   attn_mask=self.attn_mask)
-            
-#     def forward(self, x_s, x_d):
-#         """
-#         (batch_size, number of patches, embedding)
-#         text, audio, and vision should have dimension [batch_size, seq_len, n_features]
-#         dti : (1, 84, 84) -> (1, 441, embed) ; 4 * 4 patch가 441개~
-#         smri : (1, 84, 84) -> (1, 441, embed) ; 4 * 4 patch가 441개~ # 얘 되게 sparse한데.. 되겠지...?
-#         T : 368 -> d_l, d_u로 assign
-#         D : 48 -> orig_d_l, orig_d_u로 assign
-#         """
-#         # divide into patches
-#         x_d = x_d.unsqueeze(dim=1) # B, C, H, W (1, 1, 84 ,84)
-#         B, C, H, W = x_d.shape
-#         x_d = self.patch_embed_dti(x_d).flatten(2).transpose(1, 2)  # B Ph*Pw C (1, 441, 24) # 24 is embedding size
-        
-#         x_s = x_s.unsqueeze(dim=1) # B, C, H, W (1, 1, 84 ,4)
-#         B, C, H, W = x_s.shape
-#         x_s = self.patch_embed_smri(x_s).flatten(2).transpose(1, 2)  # B Ph*Pw C (1, 441, 24) # 24 is embedding size
-        
-#         proj_x_s = F.dropout(x_s.transpose(1, 2), p=self.embed_dropout, training=self.training) # torch.Size([1, 24, 441])
-#         proj_x_d = x_d.transpose(1, 2)# torch.Size([1, 24, 441])
-
-        
-#         # Project the textual/visual/audio features: 이게 crossmodal transformer의 input - 여기서!! 여기서 들어갈 때!! 여기가 feature map임!
-#         proj_x_s = proj_x_s.permute(2, 0, 1) #torch.Size([441, 1, 24])
-#         proj_x_d = proj_x_d.permute(2, 0, 1) #torch.Size([441, 1, 24])
-        
-#         # Cross attention Transformer (transformer encoder가 여기서 일을 시작함!)
-#         # s --> d & d --> s
-#         h_s_with_ds = self.trans_s_with_d(proj_x_s, proj_x_d, proj_x_d) #torch.Size([441, 1, 24])- 여기서 k q v 교환
-#         h_d_with_ss = self.trans_d_with_s(proj_x_d, proj_x_s, proj_x_s) #torch.Size([441, 1, 24])
-
-        
-#         #h_s_with_ds = self.deconv(h_s_with_ds.transpose(0, 1).float()) # torch.Size([1, 441, 24))
-#         #h_s_with_ds = h_s_with_ds.transpose(0, 1) #torch.Size([441, 1, 24])
-#         if self.concat_method == 'concat':
-#             h_zs = torch.cat([h_s_with_ds, h_d_with_ss], dim=2) # torch.Size([441, 1, 84*2]) (이 둘은 똑같아야 함)
-#             # Transformer with self attention
-#             h_zs = self.trans_mem(h_zs) # torch.Size([441, 1, 84*2])
-#             if type(h_zs) == tuple:
-#                 h_zs = h_zs[0]
-#             last_h_z = last_hs = h_zs[-1]   # Take the last output for prediction  - torch.Size([1, 84*2])
-#             out_cls = self.out_layer1(last_h_z) # torch.Size([1, 84])
-#         # hadamard는 나중에 또 고쳐..
-#         elif self.concat_method == 'hadamard':
-#             h_zs = torch.mul(h_l_with_us, h_u_with_ls) # torch.Size([368, 1, 48] 
-
-#             # Transformer with self attention
-#             h_zs = self.trans_l_mem(h_zs) # torch.Size([368, 1, 48])
-#             if type(h_zs) == tuple:
-#                 h_zs = h_zs[0]
-#             out_cls = last_hs=h_zs[-1] # Take the last output for prediction - torch.Size([1, 48])
-        
-#         pred = self.out_layer2(out_cls) # torch.Size([1, 1])
-        
-#         return {'embedding_per_ROIs': out_cls, self.task:pred}    
 
 
 class SwinTransformerV2_VAE(BaseModel):
@@ -1033,9 +907,11 @@ class SwinTransformerV2_UNet(BaseModel):
         for bly in self.layers:
             bly._init_respostnorm()
 
+    # Stella modified this function
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=.02)
+            #nn.init.kaiming_uniform_(m.weight) - same
             if isinstance(m, nn.Linear) and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
@@ -1090,6 +966,7 @@ class SwinTransformerV2_UNet(BaseModel):
         flops += self.num_features * self.num_classes
         return flops    
 
+# Everything is on option
 class SwinTransformerV2(BaseModel):
     r""" Swin Transformer
         A PyTorch impl of : `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows`  -
@@ -1115,42 +992,62 @@ class SwinTransformerV2(BaseModel):
         pretrained_window_sizes (tuple(int)): Pretrained window sizes of each layer.
     """
 
-    def __init__(self, img_size_w=84, img_size_h=84, patch_size=7, in_chans=1, num_classes=1,
-                 embed_dim=12, depths=[2, 2, 6], num_heads_swin=[3, 6, 12],
-                 window_size=6, mlp_ratio=4., qkv_bias=True,
-                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
-                 norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
-                 use_checkpoint=False, pretrained_window_sizes=[0, 0, 0, 0], **kwargs):
+    def __init__(self, **kwargs):
         super().__init__()
+
         
         self.task = kwargs.get('fine_tune_task')
-        self.num_classes = num_classes
-        self.num_layers = len(depths) # 4
-        self.embed_dim = embed_dim
-        self.ape = ape
-        self.patch_norm = patch_norm
-        self.num_features = int(embed_dim * 2 ** (self.num_layers - 1))
-        self.mlp_ratio = mlp_ratio
+        self.num_classes = 1
+        self.size_of_model = kwargs.get('size_of_model')
+        
+        if self.size_of_model == 'small':
+            self.depths = [2]
+            self.num_heads_swin = [3]
+        elif self.size_of_model == 'medium':
+            self.depths = [2, 2]
+            self.num_heads_swin = [3, 6]
+        else:
+            self.depths = [2, 2, 6]
+            self.num_heads_swin = [3, 6, 12]
+        
+        self.num_layers = len(self.depths)
+        self.embed_dim = kwargs.get('swin_embed_dim')
+        self.ape = False
+        self.qkv_bias = True
+        self.patch_norm = True
+        self.use_checkpoint = False
+        self.num_features = int(self.embed_dim * 2 ** (self.num_layers - 1))
+        
         self.drop_rate = kwargs.get('drop_rate')
         self.attn_drop_rate = kwargs.get('attn_drop_rate')
-
+        self.mlp_ratio = kwargs.get('mlp_ratio')
+        self.drop_path_rate = kwargs.get('drop_path_rate')
+        self.img_size_w = kwargs.get('intermediate_vec')
+        self.img_size_h = kwargs.get('intermediate_vec')
+        self.patch_size = kwargs.get('patch_size')
+        self.in_chans = 1
+        
+        self.norm_layer = nn.LayerNorm
+        self.pretrained_window_sizes = [0, 0, 0, 0]
+        self.window_size = kwargs.get('window_size')
+        
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
-            img_size_w=img_size_w, img_size_h=img_size_h, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
-            norm_layer=norm_layer if self.patch_norm else None)
+            img_size_w=self.img_size_w, img_size_h=self.img_size_h, patch_size=self.patch_size, in_chans=self.in_chans, embed_dim=self.embed_dim,
+            norm_layer=self.norm_layer if self.patch_norm else None)
         num_patches = self.patch_embed.num_patches # 441
         patches_resolution = self.patch_embed.patches_resolution  # (21, 21)
         self.patches_resolution = patches_resolution
 
         # absolute position embedding
         if self.ape:
-            self.absolute_pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+            self.absolute_pos_embed = nn.Parameter(torch.zeros(1, num_patches, self.embed_dim))
             trunc_normal_(self.absolute_pos_embed, std=.02)
 
-        self.pos_drop = nn.Dropout(p=drop_rate)
+        self.pos_drop = nn.Dropout(p=self.drop_rate)
 
         # stochastic depth
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
+        dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, sum(self.depths))]  # stochastic depth decay rule
 
         # build layers
         self.layers = nn.ModuleList()
@@ -1158,28 +1055,28 @@ class SwinTransformerV2(BaseModel):
         for i_layer in range(self.num_layers):
             input_resolution=(patches_resolution[0] // (2 ** i_layer),
                               patches_resolution[1] // (2 ** i_layer)),
-            layer = BasicLayer(dim=int(embed_dim * 2 ** i_layer),
+            layer = BasicLayer(dim=int(self.embed_dim * 2 ** i_layer),
                                input_resolution=(patches_resolution[0] // (2 ** i_layer),
                                                  patches_resolution[1] // (2 ** i_layer)),
-                               depth=depths[i_layer],
-                               num_heads_swin=num_heads_swin[i_layer],
-                               window_size=window_size,
+                               depth=self.depths[i_layer],
+                               num_heads_swin=self.num_heads_swin[i_layer],
+                               window_size=self.window_size,
                                mlp_ratio=self.mlp_ratio,
-                               qkv_bias=qkv_bias,
-                               drop=drop_rate, attn_drop=attn_drop_rate,
-                               drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
-                               norm_layer=norm_layer,
+                               qkv_bias=self.qkv_bias,
+                               drop=self.drop_rate, attn_drop=self.attn_drop_rate,
+                               drop_path=dpr[sum(self.depths[:i_layer]):sum(self.depths[:i_layer + 1])],
+                               norm_layer=self.norm_layer,
                                downsample=PatchMerging if (i_layer < self.num_layers - 1) else None,
-                               use_checkpoint=use_checkpoint,
-                               pretrained_window_size=pretrained_window_sizes[i_layer])
+                               use_checkpoint=self.use_checkpoint,
+                               pretrained_window_size=self.pretrained_window_sizes[i_layer])
             self.layers.append(layer)
 
-        self.norm = norm_layer(self.num_features)
+        self.norm = self.norm_layer(self.num_features)
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-        self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
-        ## (48, 1) -> 아직 act func 돌기 전..!
-
-        self.apply(self._init_weights)
+        self.head = nn.Linear(self.num_features, self.num_classes) if self.num_classes > 0 else nn.Identity()
+        ## (84, 1) -> 아직 act func 돌기 전..!
+        if kwargs.get('no_init_weights') == False:
+            self.apply(self._init_weights)
         for bly in self.layers:
             bly._init_respostnorm()
 
@@ -2139,7 +2036,7 @@ class Func_Struct_Cross(BaseModel):
         flops += self.upsample.flops()
         return flops    
 
-### NOW PRS VERSION!
+### PRS VERSION!
 class Func_Struct_UNet_Cross_PRS(BaseModel):
     r""" SwinIR
         A PyTorch impl of : `SwinIR: Image Restoration Using Swin Transformer`, based on Swin Transformer.
@@ -2192,7 +2089,7 @@ class Func_Struct_UNet_Cross_PRS(BaseModel):
         self.use_unet_function = kwargs.get('use_unet_function')
         self.use_unet_struct = kwargs.get('use_unet_struct')
         self.prs_unsqueeze = kwargs.get('prs_unsqueeze')
-        
+        self.prs_concat_method = kwargs.get('prs_concat_method')
         # PRS
         
         #self.conv_prs = nn.Conv2d(1, 1, 3, stride=1, dilation=1)
@@ -2651,7 +2548,10 @@ class Func_Struct_UNet_Cross_PRS(BaseModel):
             y3 = self.down2(y2)
             y4 = self.down3(y3)
             y5 = self.down4(y4) # ([batch size, 1024, 5, 5])
-            y5 = y5 * prs_latent
+            if self.prs_concat_method == 'hadamard':
+                y5 = y5 * prs_latent
+            elif self.prs_concat_method == 'add':
+                y5 = y5 + prs_latent
             y = self.up1(y5, y4)
             y = self.up2(y, y3)
             y = self.up3(y, y2)
@@ -2712,7 +2612,6 @@ class Func_Struct_UNet_Cross_PRS(BaseModel):
 class Func_Struct_UNet_Cross(BaseModel):
     r""" SwinIR
         A PyTorch impl of : `SwinIR: Image Restoration Using Swin Transformer`, based on Swin Transformer.
-
     Args:
         img_size (int | tuple(int)): Input image size. Default 64
         patch_size (int | tuple(int)): Patch size. Default: 1
@@ -2720,7 +2619,7 @@ class Func_Struct_UNet_Cross(BaseModel):
         embed_dim (int): Patch embedding dimension. Default: 96
         depths (tuple(int)): Depth of each Swin Transformer layer.
         num_heads (tuple(int)): Number of attention heads in different layers.
-        window_size (int): Window size. Default: 7
+        window_size (int): Window size. Default: 6 (sex) -> 3 (intelligence)
         mlp_ratio (float): Ratio of mlp hidden dim to embedding dim. Default: 4
         qkv_bias (bool): If True, add a learnable bias to query, key, value. Default: True
         qk_scale (float): Override default qk scale of head_dim ** -0.5 if set. Default: None
@@ -2737,17 +2636,62 @@ class Func_Struct_UNet_Cross(BaseModel):
         resi_connection: The convolutional block before residual connection. '1conv'/'3conv'
     """
 
-    def __init__(self, img_size=84, patch_size=7, in_chans=1,
-                 embed_dim=12, Ex_depths=[6, 6], Fusion_depths=[2, 2, 2], Re_depths=[6,6], 
+    def __init__(self, Ex_depths=[6, 6], Fusion_depths=[2, 2, 2], Re_depths=[6,6], 
                  Ex_num_heads=[6, 6], Fusion_num_heads=[6, 6, 6], Re_num_heads=[6, 6],
-                 window_size=6, mlp_ratio=4., qkv_bias=True, qk_scale=None,
-                 drop_rate=0.1, attn_drop_rate=0.1, drop_path_rate=0.1,
-                 norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
-                 use_checkpoint=False, upscale=2, img_range=1., upsampler='', resi_connection='1conv',
+                 upscale=2, img_range=1., upsampler='', resi_connection='1conv',
                  **kwargs):
         super(Func_Struct_UNet_Cross, self).__init__()
         self.task = kwargs.get('fine_tune_task')
+        self.size_of_model = kwargs.get('size_of_model')
         self.register_vars(**kwargs)
+        
+        self.num_classes = 1
+        if self.size_of_model == 'small':
+            self.depths = [2]
+            self.num_heads_swin = [3]
+            Ex_depths=[3, 3]
+            Fusion_depths=[2, 2, 2]
+            Re_depths=[3, 3]
+            Ex_num_heads=[3, 3]
+            Fusion_num_heads=[3, 3, 3]
+            Re_num_heads=[3, 3]
+        else:
+            self.depths = [2, 2, 6]
+            self.num_heads_swin = [3, 6, 12]
+            Ex_depths=[6, 6]
+            Fusion_depths=[2, 2, 2]
+            Re_depths=[6,6]
+            Ex_num_heads=[6, 6]
+            Fusion_num_heads=[6, 6, 6]
+            Re_num_heads=[6, 6]
+        
+        self.num_layers = len(self.depths)
+        self.embed_dim = kwargs.get('swin_embed_dim')
+        self.ape = False
+        self.qkv_bias = True
+        self.qk_scale = None
+        self.patch_norm = True
+        self.use_checkpoint = False
+        self.num_features = int(self.embed_dim * 2 ** (self.num_layers - 1))
+        
+        self.drop_rate = kwargs.get('drop_rate')
+        self.attn_drop_rate = kwargs.get('attn_drop_rate')
+        self.mlp_ratio = kwargs.get('mlp_ratio')
+        self.drop_path_rate = kwargs.get('drop_path_rate')
+        self.img_size_w = kwargs.get('intermediate_vec')
+        self.img_size_h = kwargs.get('intermediate_vec')
+        self.img_size = kwargs.get('intermediate_vec')
+        self.patch_size = kwargs.get('patch_size')
+        self.in_chans = 1
+        
+        self.norm_layer = nn.LayerNorm
+        self.pretrained_window_sizes = [0, 0, 0, 0]
+        
+        self.mlp_ratio = kwargs.get('mlp_ratio')
+        self.drop_rate = kwargs.get('drop_rate')
+        self.attn_drop_rate = kwargs.get('attn_drop_rate')
+        self.drop_path_rate = kwargs.get('drop_path_rate')
+        self.window_size = kwargs.get('window_size')
         
         ## for fmri processing
         self.concat_method = kwargs.get('concat_method')
@@ -2803,12 +2747,12 @@ class Func_Struct_UNet_Cross(BaseModel):
         
         
         # for DTI+sMRI processing
-        num_out_ch = in_chans
+        num_out_ch = self.in_chans
         num_feat = 64
         self.img_range = img_range
-        embed_dim_temp = int(embed_dim / 2)
+        embed_dim_temp = int(self.embed_dim / 2)
         #print('in_chans: ', in_chans)
-        if in_chans == 3 or in_chans == 6:
+        if self.in_chans == 3 or self.in_chans == 6:
             rgb_mean = (0.4488, 0.4371, 0.4040)
             rgbrgb_mean = (0.4488, 0.4371, 0.4040, 0.4488, 0.4371, 0.4040)
             self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1)
@@ -2817,21 +2761,20 @@ class Func_Struct_UNet_Cross(BaseModel):
             self.mean = torch.zeros(1, 1, 1, 1)
         self.upscale = upscale
         self.upsampler = upsampler
-        self.window_size = window_size
         ## for extracted image ##
-        self.swin = SwinTransformerV2(img_size_w=84, img_size_h=84, patch_size=7, in_chans=1, num_classes=1,
-                 embed_dim=12, depths=[2, 2, 6], num_heads_swin=[3, 6, 12],
-                 window_size=6, mlp_ratio=4., qkv_bias=True,
-                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
-                 norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
-                 use_checkpoint=False, pretrained_window_sizes=[0, 0, 0, 0], **kwargs
-        )
+#         self.swin = SwinTransformerV2(img_size_w=84, img_size_h=84, patch_size=7, in_chans=1, num_classes=1,
+#                  embed_dim=12, depths=[2, 2, 6], num_heads_swin=[3, 6, 12],
+#                  window_size=6, qkv_bias=True,
+#                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
+#                  use_checkpoint=False, pretrained_window_sizes=[0, 0, 0, 0], **kwargs
+#         )
+        self.swin = SwinTransformerV2(**kwargs)
         #####################################################################################################
         ################################### 1, shallow feature extraction ###################################
         ####shallow feature extraction ####
-        self.conv_first1_A = nn.Conv2d(in_chans, embed_dim_temp, 3, 1, 1)
-        self.conv_first1_B = nn.Conv2d(in_chans, embed_dim_temp, 3, 1, 1)
-        self.conv_first2_A = nn.Conv2d(embed_dim_temp, embed_dim, 3, 1, 1)
+        self.conv_first1_A = nn.Conv2d(self.in_chans, embed_dim_temp, 3, 1, 1)
+        self.conv_first1_B = nn.Conv2d(self.in_chans, embed_dim_temp, 3, 1, 1)
+        self.conv_first2_A = nn.Conv2d(embed_dim_temp, self.embed_dim, 3, 1, 1)
         self.conv_first2_B = nn.Conv2d(embed_dim_temp, embed_dim_temp, 3, 1, 1)
         self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
 
@@ -2841,157 +2784,154 @@ class Func_Struct_UNet_Cross(BaseModel):
         self.Fusion_num_layers = len(Fusion_depths)
         self.Re_num_layers = len(Re_depths)
 
-        self.embed_dim = embed_dim
-        self.ape = ape
-        self.patch_norm = patch_norm
-        self.num_features = embed_dim
-        self.mlp_ratio = mlp_ratio
+        self.num_features = self.embed_dim
 
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed_fusion(
-            img_size=img_size, patch_size=patch_size, in_chans=embed_dim, embed_dim=embed_dim,
-            norm_layer=norm_layer if self.patch_norm else None)
+            img_size=self.img_size, patch_size=self.patch_size, in_chans=self.embed_dim, embed_dim=self.embed_dim,
+            norm_layer=self.norm_layer if self.patch_norm else None)
         num_patches = self.patch_embed.num_patches
         patches_resolution = self.patch_embed.patches_resolution
         self.patches_resolution = patches_resolution
 
         # merge non-overlapping patches into image
         self.patch_unembed = PatchUnEmbed(
-            img_size=img_size, patch_size=patch_size, in_chans=embed_dim, embed_dim=embed_dim,
-            norm_layer=norm_layer if self.patch_norm else None)
+            img_size=self.img_size, patch_size=self.patch_size, in_chans=self.embed_dim, embed_dim=self.embed_dim,
+            norm_layer=self.norm_layer if self.patch_norm else None)
         self.softmax = nn.Softmax(dim=0)
         # absolute position embedding
         if self.ape: 
-            self.absolute_pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+            self.absolute_pos_embed = nn.Parameter(torch.zeros(1, num_patches, self.embed_dim))
             trunc_normal_(self.absolute_pos_embed, std=.02)
 
-        self.pos_drop = nn.Dropout(p=drop_rate)
+        self.pos_drop = nn.Dropout(p=self.drop_rate)
 
         # stochastic depth
-        dpr_Ex = [x.item() for x in torch.linspace(0, drop_path_rate, sum(Ex_depths))]  # stochastic depth decay rule
-        dpr_Fusion = [x.item() for x in torch.linspace(0, drop_path_rate, sum(Fusion_depths))]  # stochastic depth decay rule
-        dpr_Re = [x.item() for x in torch.linspace(0, drop_path_rate, sum(Re_depths))]  # stochastic depth decay rule
+        dpr_Ex = [x.item() for x in torch.linspace(0, self.drop_path_rate, sum(Ex_depths))]  # stochastic depth decay rule
+        dpr_Fusion = [x.item() for x in torch.linspace(0, self.drop_path_rate, sum(Fusion_depths))]  # stochastic depth decay rule
+        dpr_Re = [x.item() for x in torch.linspace(0, self.drop_path_rate, sum(Re_depths))]  # stochastic depth decay rule
         # build Residual Swin Transformer blocks (RSTB)
         self.layers_Ex_A = nn.ModuleList()
+        
         for i_layer in range(self.Ex_num_layers):
-            layer = RSTB(dim=embed_dim,
+            layer = RSTB(dim=self.embed_dim,
                          input_resolution=(patches_resolution[0],
                                            patches_resolution[1]),
                          depth=Ex_depths[i_layer],
                          num_heads=Ex_num_heads[i_layer],
-                         window_size=window_size,
+                         window_size=self.window_size,
                          mlp_ratio=self.mlp_ratio,
-                         qkv_bias=qkv_bias, qk_scale=qk_scale,
-                         drop=drop_rate, attn_drop=attn_drop_rate,
+                         qkv_bias=self.qkv_bias, qk_scale=self.qk_scale,
+                         drop=self.drop_rate, attn_drop=self.attn_drop_rate,
                          drop_path=dpr_Ex[sum(Ex_depths[:i_layer]):sum(Ex_depths[:i_layer + 1])],  # no impact on SR results
-                         norm_layer=norm_layer,
+                         norm_layer=self.norm_layer,
                          downsample=None,
-                         use_checkpoint=use_checkpoint,
-                         img_size=img_size,
-                         patch_size=patch_size,
+                         use_checkpoint=self.use_checkpoint,
+                         img_size=self.img_size,
+                         patch_size=self.patch_size,
                          resi_connection=resi_connection
                          )
             self.layers_Ex_A.append(layer)
-        self.norm_Ex_A = norm_layer(self.num_features)
+        self.norm_Ex_A = self.norm_layer(self.num_features)
 
         self.layers_Ex_B = nn.ModuleList()
         for i_layer in range(self.Ex_num_layers):
-            layer = RSTB(dim=embed_dim,
+            layer = RSTB(dim=self.embed_dim,
                          input_resolution=(patches_resolution[0],
                                            patches_resolution[1]),
                          depth=Ex_depths[i_layer],
                          num_heads=Ex_num_heads[i_layer],
-                         window_size=window_size,
+                         window_size=self.window_size,
                          mlp_ratio=self.mlp_ratio,
-                         qkv_bias=qkv_bias, qk_scale=qk_scale,
-                         drop=drop_rate, attn_drop=attn_drop_rate,
+                         qkv_bias=self.qkv_bias, qk_scale=self.qk_scale,
+                         drop=self.drop_rate, attn_drop=self.attn_drop_rate,
                          drop_path=dpr_Ex[sum(Ex_depths[:i_layer]):sum(Ex_depths[:i_layer + 1])],  # no impact on SR results
-                         norm_layer=norm_layer,
+                         norm_layer=self.norm_layer,
                          downsample=None,
-                         use_checkpoint=use_checkpoint,
-                         img_size=img_size,
-                         patch_size=patch_size,
+                         use_checkpoint=self.use_checkpoint,
+                         img_size=self.img_size,
+                         patch_size=self.patch_size,
                          resi_connection=resi_connection
                          )
             self.layers_Ex_B.append(layer)
-        self.norm_Ex_B = norm_layer(self.num_features)
+        self.norm_Ex_B = self.norm_layer(self.num_features)
         
         self.layers_Fusion = nn.ModuleList()
         for i_layer in range(self.Fusion_num_layers):
-            layer = CRSTB(dim=embed_dim,
+            layer = CRSTB(dim=self.embed_dim,
                          input_resolution=(patches_resolution[0],
                                            patches_resolution[1]),
                          depth=Fusion_depths[i_layer],
                          num_heads=Fusion_num_heads[i_layer],
-                         window_size=window_size,
+                         window_size=self.window_size,
                          mlp_ratio=self.mlp_ratio,
-                         qkv_bias=qkv_bias, qk_scale=qk_scale,
-                         drop=drop_rate, attn_drop=attn_drop_rate,
+                         qkv_bias=self.qkv_bias, qk_scale=self.qk_scale,
+                         drop=self.drop_rate, attn_drop=self.attn_drop_rate,
                          drop_path=dpr_Fusion[sum(Fusion_depths[:i_layer]):sum(Fusion_depths[:i_layer + 1])],  # no impact on SR results
-                         norm_layer=norm_layer,
+                         norm_layer=self.norm_layer,
                          downsample=None,
-                         use_checkpoint=use_checkpoint,
-                         img_size=img_size,
-                         patch_size=patch_size,
+                         use_checkpoint=self.use_checkpoint,
+                         img_size=self.img_size,
+                         patch_size=self.patch_size,
                          resi_connection=resi_connection
                          )
             self.layers_Fusion.append(layer)
-        self.norm_Fusion_A = norm_layer(self.num_features)
-        self.norm_Fusion_B = norm_layer(self.num_features)
+        self.norm_Fusion_A = self.norm_layer(self.num_features)
+        self.norm_Fusion_B = self.norm_layer(self.num_features)
         
         self.layers_Re = nn.ModuleList()
         for i_layer in range(self.Re_num_layers):
-            layer = RSTB(dim=embed_dim,
+            layer = RSTB(dim=self.embed_dim,
                          input_resolution=(patches_resolution[0],
                                            patches_resolution[1]),
                          depth=Re_depths[i_layer],
                          num_heads=Re_num_heads[i_layer],
-                         window_size=window_size,
+                         window_size=self.window_size,
                          mlp_ratio=self.mlp_ratio,
-                         qkv_bias=qkv_bias, qk_scale=qk_scale,
-                         drop=drop_rate, attn_drop=attn_drop_rate,
+                         qkv_bias=self.qkv_bias, qk_scale=self.qk_scale,
+                         drop=self.drop_rate, attn_drop=self.attn_drop_rate,
                          drop_path=dpr_Re[sum(Re_depths[:i_layer]):sum(Re_depths[:i_layer + 1])],  # no impact on SR results
-                         norm_layer=norm_layer,
+                         norm_layer=self.norm_layer,
                          downsample=None,
-                         use_checkpoint=use_checkpoint,
-                         img_size=img_size,
-                         patch_size=patch_size,
+                         use_checkpoint=self.use_checkpoint,
+                         img_size=self.img_size,
+                         patch_size=self.patch_size,
                          resi_connection=resi_connection
                          )
             self.layers_Re.append(layer)
-        self.norm_Re = norm_layer(self.num_features)
+        self.norm_Re = self.norm_layer(self.num_features)
 
         # build the last conv layer in deep feature extraction
         if resi_connection == '1conv':
-            self.conv_after_body_Ex_A = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
-            self.conv_after_body_Ex_A = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
-            self.conv_after_body_Fusion = nn.Conv2d(2 * embed_dim, embed_dim, 3, 1, 1)
-            self.conv_after_body_Re = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
+            self.conv_after_body_Ex_A = nn.Conv2d(self.embed_dim, self.embed_dim, 3, 1, 1)
+            self.conv_after_body_Ex_A = nn.Conv2d(self.embed_dim, self.embed_dim, 3, 1, 1)
+            self.conv_after_body_Fusion = nn.Conv2d(2 * self.embed_dim, self.embed_dim, 3, 1, 1)
+            self.conv_after_body_Re = nn.Conv2d(self.embed_dim, self.embed_dim, 3, 1, 1)
 
         elif resi_connection == '3conv':
             # to save parameters and memory
-            self.conv_after_body = nn.Sequential(nn.Conv2d(embed_dim, embed_dim // 4, 3, 1, 1),
+            self.conv_after_body = nn.Sequential(nn.Conv2d(self.embed_dim, self.embed_dim // 4, 3, 1, 1),
                                                  nn.LeakyReLU(negative_slope=0.2, inplace=True),
-                                                 nn.Conv2d(embed_dim // 4, embed_dim // 4, 1, 1, 0),
+                                                 nn.Conv2d(self.embed_dim // 4, self.embed_dim // 4, 1, 1, 0),
                                                  nn.LeakyReLU(negative_slope=0.2, inplace=True),
-                                                 nn.Conv2d(embed_dim // 4, embed_dim, 3, 1, 1))
+                                                 nn.Conv2d(self.embed_dim // 4, self.embed_dim, 3, 1, 1))
 
         #####################################################################################################
         ################################ 3, high quality image reconstruction ################################
         if self.upsampler == 'pixelshuffle':
             # for classical SR
-            self.conv_before_upsample = nn.Sequential(nn.Conv2d(embed_dim, num_feat, 3, 1, 1),
+            self.conv_before_upsample = nn.Sequential(nn.Conv2d(self.embed_dim, num_feat, 3, 1, 1),
                                                       nn.LeakyReLU(inplace=True))
             self.upsample = Upsample(upscale, num_feat)
             self.conv_last = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
         elif self.upsampler == 'pixelshuffledirect':
             # for lightweight SR (to save parameters)
-            self.upsample = UpsampleOneStep(upscale, embed_dim, num_out_ch,
+            self.upsample = UpsampleOneStep(upscale, self.embed_dim, num_out_ch,
                                             (patches_resolution[0], patches_resolution[1]))
         elif self.upsampler == 'nearest+conv':
             # for real-world SR (less artifacts)
             assert self.upscale == 4, 'only support x4 now.'
-            self.conv_before_upsample = nn.Sequential(nn.Conv2d(embed_dim, num_feat, 3, 1, 1),
+            self.conv_before_upsample = nn.Sequential(nn.Conv2d(self.embed_dim, num_feat, 3, 1, 1),
                                                       nn.LeakyReLU(inplace=True))
             self.conv_up1 = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
             self.conv_up2 = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
@@ -3000,7 +2940,7 @@ class Func_Struct_UNet_Cross(BaseModel):
             self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
         else:
             # for image denoising and JPEG compression artifact reduction
-            self.conv_last1 = nn.Conv2d(embed_dim, embed_dim_temp, 3, 1, 1)
+            self.conv_last1 = nn.Conv2d(self.embed_dim, embed_dim_temp, 3, 1, 1)
             self.conv_last2 = nn.Conv2d(embed_dim_temp, int(embed_dim_temp/2), 3, 1, 1)
             self.conv_last3 = nn.Conv2d(int(embed_dim_temp/2), num_out_ch, 3, 1, 1)
 
@@ -3132,7 +3072,7 @@ class Func_Struct_UNet_Cross(BaseModel):
             transformer_dict_ultralow = self.transformer_ultralow(x_u)
         
         '''
-        size of out seq is: torch.Size([1, 361, 84])
+        size of out seq is: torch.Size([1, 368, 84])
         size of out cls is: torch.Size([1, 84])
         size of prediction is: torch.Size([1, 1])
         '''
@@ -3241,7 +3181,6 @@ class Func_Struct_UNet_Cross(BaseModel):
         flops += H * W * 3 * self.embed_dim * self.embed_dim
         flops += self.upsample.flops()
         return flops        
-
 
 # Modifying now..
 # if self.multimodality_type == 'transfer':

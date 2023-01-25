@@ -7,7 +7,6 @@ import warnings
 import numpy as np
 from tqdm import tqdm
 from model import *
-#Transformer_Net, MULTModel, SwinTransformerV2, Func_Struct_Add, Func_Struct_Transfer, Func_Struct_Cross, Transformer_Net_Two_Channels, SwinFusion, SwinTransformerV2_VAE, SwinTransformerV2_UNet, Func_Struct_UNet_Cross, Func_Struct_UNet_Add
 from losses import get_intense_voxels
 import time
 import pathlib
@@ -46,11 +45,18 @@ class Trainer():
         self.batch_index = None
         self.best_loss = 100000
         self.best_AUROC = 0
+        self.best_ACC = 0
+        self.val_threshold = 0
         self.st_epoch = 1
+        self.recent_pth = None
+        self.state_dict = None
         self.model_weights_path = kwargs.get('model_weights_path')
+        self.clip_max_norm = kwargs.get('clip_max_norm')
         
-        self.lr_handler = LrHandler(**kwargs)
+        
+        
         self.train_loader, self.val_loader, self.test_loader = DataHandler(**kwargs).create_dataloaders()
+        self.lr_handler = LrHandler(self.train_loader, **kwargs)
         # dm = fMRIDataModule2(
         #     data_seed=1234,
         #     dataset_name='S1200',
@@ -80,7 +86,7 @@ class Trainer():
         
         self.load_optim_checkpoint()
 
-        self.writer = Writer(sets,**kwargs) #여기서 이미 writer class를 불러옴.
+        self.writer = Writer(sets,self.val_threshold,**kwargs)
         self.sets = sets
         
         #wandb
@@ -96,8 +102,9 @@ class Trainer():
             if loss_dict['is_active']:
                 print('using {} loss'.format(name))
                 setattr(self, name + '_loss_func', loss_dict['criterion'])
+
     
-    def find_pth(self, files_Path):
+    def _sort_pth_files(self, files_Path):
         file_name_and_time_lst = []
         for f_name in os.listdir(files_Path):
             if f_name.endswith('.pth'):
@@ -109,18 +116,18 @@ class Trainer():
         return sorted_file_lst
     
     def load_model_checkpoint(self):
-        pths = self.find_pth(self.experiment_folder)
-        if len(pths) > 0 : # if there are any checkpoints
+        pths = self._sort_pth_files(self.experiment_folder)
+        if len(pths) > 0 : # if there are any checkpoints from which we can resume the training. 
             self.recent_pth = pths[0][0] # the most recent checkpoints
             print(f'loading checkpoint from {os.path.join(self.experiment_folder,self.recent_pth)}')
             self.state_dict = torch.load(os.path.join(self.experiment_folder,self.recent_pth),map_location='cpu') #, map_location=self.device
-            self.model.load_partial_state_dict(self.state_dict['model_state_dict'],load_cls_embedding=False)
+            self.model.load_partial_state_dict(self.state_dict['model_state_dict'],load_cls_embedding=True)
             self.model.loaded_model_weights_path = os.path.join(self.experiment_folder,self.recent_pth)
 
         elif self.loaded_model_weights_path: # if there are weights from previous phase
             self.recent_pth = None
             self.state_dict = torch.load(self.loaded_model_weights_path,map_location='cpu') #, map_location=self.device
-            self.model.load_partial_state_dict(self.state_dict['model_state_dict'],load_cls_embedding=False)
+            self.model.load_partial_state_dict(self.state_dict['model_state_dict'],load_cls_embedding=True)
             self.model.loaded_model_weights_path = self.loaded_model_weights_path
             
         else:
@@ -129,23 +136,27 @@ class Trainer():
             print('There are no checkpoints or weights from previous steps')
             
     def load_optim_checkpoint(self):
-        if self.recent_pth and self.state_dict: # if there are any checkpoints
+        if self.recent_pth: # if there are any checkpoints from which we can resume the training. 
             self.optimizer.load_state_dict(self.state_dict['optimizer_state_dict'])
             self.lr_handler.schedule.load_state_dict(self.state_dict['schedule_state_dict'])
-            self.optimizer.param_groups[0]['lr'] = self.state_dict['lr']
+            # self.optimizer.param_groups[0]['lr'] = self.state_dict['lr']
             self.scaler.load_state_dict(self.state_dict['amp_state'])
             self.st_epoch = int(self.state_dict['epoch']) + 1
             self.best_loss = self.state_dict['loss_value']
             text = 'Training start from epoch {} and learning rate {}.'.format(self.st_epoch, self.optimizer.param_groups[0]['lr'])
-            if 'AUROC' in self.state_dict:
-                text += 'validation AUROC - {}'.format(self.state_dict['AUROC'])
-            print('Training start from epoch {} and learning rate {}.'.format(self.st_epoch, self.optimizer.param_groups[0]['lr']))
+            if 'val_AUROC' in self.state_dict:
+                text += 'validation AUROC - {} '.format(self.state_dict['val_AUROC'])
+            print(text)
             
         elif self.state_dict:  # if there are weights from previous phase
             text = 'loaded model weights:\nmodel location - {}\nlast learning rate - {}\nvalidation loss - {}\n'.format(
                 self.loaded_model_weights_path, self.state_dict['lr'],self.state_dict['loss_value'])
-            if 'AUROC' in self.state_dict:
-                text += 'validation AUROC - {}'.format(self.state_dict['AUROC'])
+            if 'val_AUROC' in self.state_dict:
+                text += 'validation AUROC - {}'.format(self.state_dict['val_AUROC'])
+            
+            if 'val_threshold' in self.state_dict:
+                self.val_threshold = self.state_dict['val_threshold']
+                text += 'val_threshold - {}'.format(self.state_dict['val_threshold'])
             print(text)
         else:
             pass
@@ -154,23 +165,14 @@ class Trainer():
             
     def create_optimizer(self):
         lr = self.lr_handler.base_lr
-        
-
         params = self.model.parameters()
         print(params)
         weight_decay = self.kwargs.get('weight_decay')
-        #self.optimizer = FusedAdam(params, lr=lr, weight_decay=weight_decay)
-        optim = self.kwargs.get('optim')
-
-        self.optimizer = getattr(torch.optim,optim)(params, lr=lr, weight_decay=weight_decay)  #torch.optim.Adam(params, lr=lr, weight_decay=weight_decay)
+        optim = self.kwargs.get('optim') # we use Adam or AdamW
+        
+        self.optimizer = getattr(torch.optim,optim)(params, lr=lr, weight_decay=weight_decay)
         
         
-        # attach optimizer to cuda device.
-        # for state in self.optimizer.state.values():
-        #     for k, v in state.items():
-        #         if isinstance(v, torch.Tensor):
-        #             state[k] = v.cuda(self.gpu)
-
     def create_model(self):
         dim = self.train_loader.dataset.dataset.get_input_shape()
         print('self.task:', self.task) # lowfreqBERT라고 얘기해줌.
@@ -186,7 +188,7 @@ class Trainer():
                         print('test for multimodal model')
                         self.model = Func_Struct_Transfer(**self.kwargs)
                     elif self.fmri_multimodality_type == 'cross_attention':
-                        self.model = MULTModel(**self.kwargs)
+                        self.model = Transformer_Net_Cross_Attention(**self.kwargs)
                     elif self.fmri_multimodality_type == 'two_channels':
                         print('two channels!')
                         self.model = Transformer_Net_Two_Channels(**self.kwargs)
@@ -238,7 +240,7 @@ class Trainer():
         elif self.task.lower() == 'lowfreqbert':
             if self.fmri_multimodality_type == 'cross_attention':
                 print('lowfreqBERT - Cross Attention!!!')
-                self.model = MULTModel(**self.kwargs)
+                self.model = Transformer_Net_Cross_Attention(**self.kwargs)
             elif self.fmri_multimodality_type == 'two_channels':
                 print('lowfreqBERT - Two Channels!!!')
                 self.model = Transformer_Net_Two_Channels(**self.kwargs)
@@ -262,7 +264,6 @@ class Trainer():
         elif self.task.lower() == 'swinfusion':
             print('SwinFusion for DTI and sMRI!!')
             self.model = SwinFusion(**self.kwargs)
-
         
         
     def set_model_device(self):
@@ -290,7 +291,10 @@ class Trainer():
                 model_without_ddp = self.model.module
         else:
             self.device = torch.device("cuda" if self.cuda else "cpu")
+            
             self.model = DataParallel(self.model).to(self.device)
+
+            
 
 
     def training(self):
@@ -305,7 +309,7 @@ class Trainer():
             print('______epoch summary {}/{}_____\n'.format(epoch,self.nEpochs))
             # print losses
             self.writer.loss_summary(lr=self.optimizer.param_groups[0]['lr'])
-            self.writer.accuracy_summary(mid_epoch=True)
+            self.writer.accuracy_summary(mid_epoch=False) # changed by JB
             self.writer.save_history_to_csv()
             
             self.writer.register_wandb(epoch, lr=self.optimizer.param_groups[0]['lr'])
@@ -356,7 +360,8 @@ class Trainer():
             print(f'time taken to perform {epoch}: {end-start:.2f}')
     '''            
  
-    def train_epoch(self,epoch):       
+    def train_epoch(self,epoch):
+        
         if self.distributed:
             self.train_loader.sampler.set_epoch(epoch)
         self.train()
@@ -390,7 +395,7 @@ class Trainer():
                         torch.cuda.nvtx.range_pop()
                         torch.cuda.nvtx.range_push("gradient_clipping")
                         #print('executing gradient clipping')
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1, error_if_nonfinite=False)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.clip_max_norm, error_if_nonfinite=False)
                         torch.cuda.nvtx.range_pop()
                     
                     torch.cuda.nvtx.range_push("optimize")
@@ -586,7 +591,7 @@ class Trainer():
 
     def get_last_loss(self):
         if self.kwargs.get('fine_tune_task') == 'regression': #self.model.task
-            return self.writer.val_MSE[-1]
+            return self.writer.val_MAE[-1]
         else:
             return self.writer.total_val_loss_history[-1]
 
@@ -596,11 +601,33 @@ class Trainer():
         else:
             return None
 
+
+    def get_last_ACC(self):
+        if hasattr(self.writer,'val_Balanced_Accuracy'):
+            return self.writer.val_Balanced_Accuracy[-1]
+        else:
+            return None
+    
+    def get_last_best_ACC(self):
+        if hasattr(self.writer,'val_best_bal_acc'):
+            return self.writer.val_best_bal_acc[-1]
+        else:
+            return None
+    
+    def get_last_val_threshold(self):
+        if hasattr(self.writer,'val_best_threshold'):
+            return self.writer.val_best_threshold[-1]
+        else:
+            return None
+
     def save_checkpoint_(self, epoch, batch_idx, scaler):
         loss = self.get_last_loss()
-        AUROC = self.get_last_AUROC()
-        title = str(self.writer.experiment_title) + '_epoch_' + str(int(epoch)) + '_batch_index_'+ str(batch_idx) # 이 함수 안에서만 쓰도록 함~
-        
+        #accuracy = self.get_last_AUROC()
+        val_ACC = self.get_last_ACC()
+        val_best_ACC = self.get_last_best_ACC()
+        val_AUROC = self.get_last_AUROC()
+        val_threshold = self.get_last_val_threshold()
+        title = str(self.writer.experiment_title) + '_epoch_' + str(int(epoch))
         directory = self.writer.experiment_folder
 
         # Create directory to save to
@@ -616,36 +643,49 @@ class Trainer():
             'epoch':epoch,
             'loss_value':loss,
             'amp_state': amp_state}
-        if AUROC is not None:
-            ckpt_dict['AUROC'] = AUROC
-        if loss is not None:
-            ckpt_dict['MSE'] = loss # Stella added it!
+
+        # if val_ACC is not None:
+        #     ckpt_dict['val_ACC'] = val_ACC
+        if val_AUROC is not None:
+            ckpt_dict['val_AUROC'] = val_AUROC
+        if val_threshold is not None:
+            ckpt_dict['val_threshold'] = val_threshold
         if self.lr_handler.schedule is not None:
             ckpt_dict['schedule_state_dict'] = self.lr_handler.schedule.state_dict()
             ckpt_dict['lr'] = self.optimizer.param_groups[0]['lr']
+            print(f"current_lr:{self.optimizer.param_groups[0]['lr']}")
         if hasattr(self,'loaded_model_weights_path'):
             ckpt_dict['loaded_model_weights_path'] = self.loaded_model_weights_path
         
-        # Save checkpoint per one epoch 
-        # commented out by JB
-        # name = "{}.pth".format(core_name) 
-        # torch.save(ckpt_dict, os.path.join(directory, name))
-        
-        core_name = title
-        # best loss나 best AUROC를 가진 모델만 저장하는 코드
         # classification
-        if AUROC is not None and self.best_AUROC < AUROC:
-            #self.best_accuracy = accuracy
-            self.best_AUROC = AUROC
-            #name = "{}_BEST_val_accuracy.pth".format(core_name)
-            name = "{}_BEST_val_AUROC.pth".format(core_name)
-            torch.save(ckpt_dict, os.path.join(directory, name))
-            print(f'updating best saved model with AUROC:{AUROC}')
-            #print(f'updating best saved model with accuracy:{accuracy}')
+        # if val_ACC is not None and self.best_ACC < val_ACC:
+        #     self.best_ACC = val_ACC
+        #     name = "{}_BEST_val_ACC.pth".format(title)
+        #     torch.save(ckpt_dict, os.path.join(directory, name))
+        #     print(f'updating best saved model with ACC:{val_ACC}')
+        
+        # classification
+        if val_AUROC is not None:
+            if self.best_AUROC < val_AUROC:
+                self.best_AUROC = val_AUROC
+                name = "{}_BEST_val_AUROC.pth".format(title)
+                torch.save(ckpt_dict, os.path.join(directory, name))
+                print(f'updating best saved model with AUROC:{val_AUROC}')
+
+                if self.best_ACC < val_ACC:
+                    self.best_ACC = val_ACC
+            elif self.best_AUROC >= val_AUROC:
+                # If model is not improved in val AUROC, but improved in val ACC.
+                if self.best_ACC < val_ACC:
+                    self.best_ACC = val_ACC
+                    name = "{}_BEST_val_ACC.pth".format(title)
+                    torch.save(ckpt_dict, os.path.join(directory, name))
+                    print(f'updating best saved model with ACC:{val_ACC}')
+
         # regression
-        elif AUROC is None and self.best_loss > loss:
+        elif val_AUROC is None and self.best_loss > loss:
             self.best_loss = loss
-            name = "{}_BEST_val_loss.pth".format(core_name)
+            name = "{}_BEST_val_loss.pth".format(title)
             torch.save(ckpt_dict, os.path.join(directory, name))
             print(f'updating best saved model with loss: {loss}')
 

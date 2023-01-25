@@ -87,6 +87,7 @@ def get_arguments(base_path):
     # AMP configs:
     parser.add_argument('--amp', action='store_false')
     parser.add_argument('--gradient_clipping', action='store_true')
+    parser.add_argument('--clip_max_norm', type=float, default=1.0)
     #parser.add_argument('--opt_level', default='O1', type=str,
     #                    help='opt level of amp. O1 is recommended')
     
@@ -156,9 +157,7 @@ def get_arguments(base_path):
     parser.add_argument('--hyp_gamma_xgboost_min', default=0.0)
     parser.add_argument('--hyp_gamma_xgboost_ceil', default=0.4)    
     
-    # lowfreqBERT
-    
-    
+    ## lowfreqBERT
     # Model Options
     parser.add_argument('--feature_map_gen', default='convolution_ul+l', choices=['convolution_ul+l','convolution_ul', 'no', 'resample'], help='how to generate feature map: convolution_ul+l|convolution_ul|no')
     parser.add_argument('--feature_map_size', default='same', choices=['same','different'], help='size of feature map: same|different')
@@ -167,11 +166,11 @@ def get_arguments(base_path):
     parser.add_argument('--filtering_type', default='FIR', choices=['FIR', 'Boxcar'])
         
     
-    # Tasks
-    parser.add_argument('--uonly', action='store_true',
-                        help='use the crossmodal fusion into u (default: False)')
-    parser.add_argument('--lonly', action='store_true',
-                        help='use the crossmodal fusion into l (default: False)')
+#     # Tasks
+#     parser.add_argument('--uonly', action='store_true',
+#                         help='use the crossmodal fusion into u (default: False)')
+#     parser.add_argument('--lonly', action='store_true',
+#                         help='use the crossmodal fusion into l (default: False)')
 
     # Dropouts
     parser.add_argument('--attn_dropout', type=float, default=0.1,
@@ -189,11 +188,21 @@ def get_arguments(base_path):
 
     # Architecture
     parser.add_argument('--nlevels', type=int, default=12,
-                        help='number of layers in the network (default: 5)')
+                        help='number of layers in the network (default: 12)')
     parser.add_argument('--num_heads_mult', type=int, default=12,
-                        help='number of heads for the mutlimodal transformer network (default: 5)')
+                        help='number of heads for the mutlimodal transformer network (default: 12)')
     parser.add_argument('--attn_mask', action='store_false',
                         help='use attention mask for Transformer (default: true)')
+    
+    ## Swin Transformer (single modality & FuncStruct)
+    parser.add_argument('--swin_embed_dim', type=int, default=12)
+    parser.add_argument('--patch_size', type=int, default=7)
+    parser.add_argument('--drop_rate', type=float, default=0.0)
+    parser.add_argument('--attn_drop_rate', type=float, default=0.0)
+    parser.add_argument('--mlp_ratio', type=float, default=4.)
+    parser.add_argument('--drop_path_rate', type=float, default=0.0)
+    parser.add_argument('--window_size', type=int, default=6)
+    parser.add_argument('--no_init_weights', action='store_false')
     
     
     ##phase 1 2DBERT
@@ -204,7 +213,7 @@ def get_arguments(base_path):
     parser.add_argument('--augment_prob_phase1', default=0)
     parser.add_argument('--optim_phase1', default='AdamW')
     parser.add_argument('--weight_decay_phase1', type=float, default=1e-5)
-    parser.add_argument('--lr_policy_phase1', default='step', choices=['step','SGDR', 'CosAnn'], help='learning rate policy: step|SGDR')
+    parser.add_argument('--lr_policy_phase1', default='step', help='learning rate policy: step|SGDR')
     parser.add_argument('--lr_init_phase1', type=float, default=1e-3)
     parser.add_argument('--lr_gamma_phase1', type=float, default=0.97)
     parser.add_argument('--lr_step_phase1', type=int, default=500)
@@ -224,7 +233,7 @@ def get_arguments(base_path):
     parser.add_argument('--augment_prob_phase2', default=0)
     parser.add_argument('--optim_phase2', default='AdamW')
     parser.add_argument('--weight_decay_phase2', type=float, default=1e-5) # 원래는 1e-7이었음!
-    parser.add_argument('--lr_policy_phase2', default='step', choices=['step','SGDR', 'CosAnn'], help='learning rate policy: step|SGDR')
+    parser.add_argument('--lr_policy_phase2', default='step', help='learning rate policy: step|SGDR')
     parser.add_argument('--lr_init_phase2', type=float, default=1e-3)
     parser.add_argument('--lr_gamma_phase2', type=float, default=0.97)
     parser.add_argument('--lr_step_phase2', type=int, default=500)
@@ -241,20 +250,16 @@ def get_arguments(base_path):
     parser.add_argument('--nEpochs_phase3', type=int, default=20)
     parser.add_argument('--augment_prob_phase3', default=0)
     parser.add_argument('--weight_decay_phase3', type=float, default=1e-5)
-    parser.add_argument('--lr_policy_phase3', default='step', choices=['step','SGDR', 'CosAnn'], help='learning rate policy: step|SGDR')
+    parser.add_argument('--lr_policy_phase3', default='step', help='learning rate policy: step|SGDR|CosAnn')
     parser.add_argument('--lr_init_phase3', type=float, default=1e-4)
     parser.add_argument('--lr_gamma_phase3', type=float, default=0.97)
     parser.add_argument('--lr_step_phase3', type=int, default=1000)
     parser.add_argument('--lr_warmup_phase3', type=int, default=500)
-    #parser.add_argument('--sequence_length_phase3',type=int, default=20)
     parser.add_argument('--workers_phase3', type=int, default=4)
     parser.add_argument('--model_weights_path_phase2', default=None)
     parser.add_argument('--use_cont_loss', default=False)
     parser.add_argument('--use_mask_loss', default=False)
-    parser.add_argument('--patch_size', type=int, default=4)
-    parser.add_argument('--drop_rate', type=float, default=0.0)
-    parser.add_argument('--attn_drop_rate', type=float, default=0.0)
-    parser.add_argument('--VIT_name', type=str, default='vit', choices = ['vit', 'swinv2'])
+    parser.add_argument('--VIT_name', type=str, default='swinv2', choices = ['vit', 'swinv2'])
     
 
     
@@ -264,9 +269,9 @@ def get_arguments(base_path):
     parser.add_argument('--batch_size_phase4', type=int, default=4)
     parser.add_argument('--nEpochs_phase4', type=int, default=20)
     parser.add_argument('--augment_prob_phase4', default=0)
-    parser.add_argument('--optim_phase4', default='Adam')
+    parser.add_argument('--optim_phase4', default='AdamW')
     parser.add_argument('--weight_decay_phase4', type=float, default=1e-2)
-    parser.add_argument('--lr_policy_phase4', default='step', choices=['step','SGDR', 'CosAnn'], help='learning rate policy: step|SGDR')
+    parser.add_argument('--lr_policy_phase4', default='step', help='learning rate policy: step|SGDR')
     parser.add_argument('--lr_init_phase4', type=float, default=1e-4)
     parser.add_argument('--lr_gamma_phase4', type=float, default=0.9)
     parser.add_argument('--lr_step_phase4', type=int, default=1500)
@@ -283,7 +288,7 @@ def get_arguments(base_path):
     parser.add_argument('--augment_prob_phase5', default=0)
     parser.add_argument('--optim_phase5', default='AdamW')
     parser.add_argument('--weight_decay_phase5', type=float, default=1e-5)
-    parser.add_argument('--lr_policy_phase5', default='step', choices=['step','SGDR', 'CosAnn'], help='learning rate policy: step|SGDR')
+    parser.add_argument('--lr_policy_phase5', default='step', help='learning rate policy: step|SGDR')
     parser.add_argument('--lr_init_phase5', type=float, default=1e-3)
     parser.add_argument('--lr_gamma_phase5', type=float, default=0.97)
     parser.add_argument('--lr_step_phase5', type=int, default=500)
@@ -297,7 +302,8 @@ def get_arguments(base_path):
     parser.add_argument('--use_unet_struct', action='store_true')
     parser.add_argument('--use_prs', action='store_true')
     parser.add_argument('--prs_unsqueeze', default='convolution', choices=['single_convolution','multiple_convolution', 'repeat'])
-
+    parser.add_argument('--prs_concat_method', default='add', choices=['add','hadamard'], help='size of feature map: add|hadamard')
+    parser.add_argument('--size_of_model', default='large', choices=['small', 'medium', 'large'])
 
     ##phase 6 MultiVIT
     parser.add_argument('--task_phase6', type=str, default='SwinFusion')
@@ -307,7 +313,7 @@ def get_arguments(base_path):
     parser.add_argument('--augment_prob_phase6', default=0)
     parser.add_argument('--optim_phase6', default='AdamW')
     parser.add_argument('--weight_decay_phase6', type=float, default=1e-5)
-    parser.add_argument('--lr_policy_phase6', default='step', choices=['step','SGDR', 'CosAnn'], help='learning rate policy: step|SGDR')
+    parser.add_argument('--lr_policy_phase6', default='step', help='learning rate policy: step|SGDR')
     parser.add_argument('--lr_init_phase6', type=float, default=1e-3)
     parser.add_argument('--lr_gamma_phase6', type=float, default=0.97)
     parser.add_argument('--lr_step_phase6', type=int, default=500)

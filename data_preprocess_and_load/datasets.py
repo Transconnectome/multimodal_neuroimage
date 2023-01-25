@@ -183,43 +183,33 @@ class ABCD_fMRI_timeseries(BaseDataset):
         # ABCD 에서 target value가 결측값인 샘플 제거
         non_na = self.meta_data[['subjectkey',self.target]].dropna(axis=0)
         
-        #subjects = list(non_na['subjectkey']) # subjects의 형식: NDARINVZRHTXMXD #나중에 그냥 이걸 고치자..
-        with open("rsfMRI_upper370_sub_list.txt", mode="r") as file:
-            subject_upper370 = file.read().splitlines()
+        subjects = list(non_na['subjectkey'])
         
-        subjects = list(set(list(non_na['subjectkey'])) & set(subject_upper370))
+        with open("multimodal_sub_list.txt", mode="r") as file:
+            intersect = file.read().splitlines()
         
-#         if 'resample' in self.feature_map_gen:
-#             with open("resample_nan_sub_list.txt", mode="r") as file:
-#                 nan_subjects = file.read().splitlines()
-#             subjects = set(subjects) - set(nan_subjects)
-            
-        with open("rsfMRI_filtering_with_nan_sub_list.txt", mode="r") as file:
-            nan_subjects = file.read().splitlines()
-        subjects = set(subjects) - set(nan_subjects)
-        
+        subjects = list(set(subjects) & set(intersect))
+               
         if self.fine_tune_task == 'regression':
             cont_mean = non_na[self.target].mean()
             cont_std = non_na[self.target].std()
-        for i,subject in enumerate(os.listdir(self.data_dir)):
-            # subject의 형식: sub-NDARINVZRHTXMXD
-            subject=subject.split('-')[1]
-            if subject in subjects:
-                # Normalization
-                if self.fine_tune_task == 'regression':
-                    target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
-                    target = target.float()
-                elif self.fine_tune_task == 'binary_classification':
-                    target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
-                
-                if self.dataset_name == 'fMRI_timeseries':
-                    if self.intermediate_vec == 84:
-                        path_to_fMRIs = os.path.join(self.data_dir, 'sub-'+subject, 'desikankilliany_sub-'+subject+'.npy') # npy 파일로 접근할 것 
-                    elif self.intermediate_vec == 48:
-                        path_to_fMRIs = os.path.join(self.data_dir, 'sub-'+subject, 'harvard_oxford_sub-'+subject+'.npy') # npy 파일로 접근할 것
-                        
-                #if np.load(path_to_fMRIs)[20:].T.shape[1]>= 350:
-                self.index_l.append((i, subject, path_to_fMRIs, target))
+        
+        for i, subject in enumerate(subjects):
+            # Normalization
+            if self.fine_tune_task == 'regression':
+                target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
+                target = target.float()
+            elif self.fine_tune_task == 'binary_classification':
+                target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
+
+            if self.dataset_name == 'fMRI_timeseries':
+                if self.intermediate_vec == 84:
+                    path_to_fMRIs = os.path.join(self.data_dir, 'sub-'+subject, 'desikankilliany_sub-'+subject+'.npy') 
+                elif self.intermediate_vec == 48:
+                    path_to_fMRIs = os.path.join(self.data_dir, 'sub-'+subject, 'harvard_oxford_sub-'+subject+'.npy') 
+
+            
+            self.index_l.append((i, subject, path_to_fMRIs, target))
 
     def __len__(self):
         N = len(self.index_l)
@@ -388,23 +378,32 @@ class ABCD_DTI(BaseDataset):
         # ABCD 에서 target value가 결측값인 샘플 제거
         non_na = self.meta_data[['subjectkey',self.target]].dropna(axis=0)
         subjects = list(non_na['subjectkey']) # subjects의 형식: NDARINVZRHTXMXD
-
+        
+        with open("multimodal_sub_list.txt", mode="r") as file:
+            intersect = file.read().splitlines()
+        
+        subjects = list(set(subjects) & set(intersect))
+        
+        print('whole subject length is:', len(subjects))
+        
         if self.fine_tune_task == 'regression':
             cont_mean = non_na[self.target].mean()
             cont_std = non_na[self.target].std()
         
-        for i,filename in enumerate(os.listdir(self.data_dir)):
-            subject=filename.split('_')[-1].split('.')[0] # subject의 형식: NDARINVZRHTXMXD
-            if subject in subjects:
-                # Normalization
-                if self.fine_tune_task == 'regression':
-                    target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
-                    target = target.float()
-                elif self.fine_tune_task == 'binary_classification':
-                    target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
-                
-                path_to_DTIs = os.path.join(self.data_dir, filename)
-                self.index_l.append((i, subject, path_to_DTIs, target))
+        
+        for i,subject in enumerate(subjects):
+            # subject의 형식: NDARINVZRHTXMXD
+            # Normalization
+            if self.fine_tune_task == 'regression':
+                target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
+                target = target.float()
+            elif self.fine_tune_task == 'binary_classification':
+                target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
+            
+            filename = 'dti_count_'+subject+'.npy'
+            
+            path_to_DTIs = os.path.join(self.data_dir, filename)
+            self.index_l.append((i, subject, path_to_DTIs, target))
 
     def __len__(self):
         N = len(self.index_l)
@@ -431,23 +430,38 @@ class ABCD_sMRI(BaseDataset):
         # ABCD 에서 target value가 결측값인 샘플 제거
         non_na = self.meta_data[['subjectkey',self.target]].dropna(axis=0)
         subjects = list(non_na['subjectkey']) # subjects의 형식: NDARINVZRHTXMXD
-
+        
+        with open("multimodal_sub_list.txt", mode="r") as file:
+            intersect = file.read().splitlines()
+        
+        subjects = list(set(subjects) & set(intersect))
+        
+        print('whole subject length is:', len(subjects))
+        
         if self.fine_tune_task == 'regression':
             cont_mean = non_na[self.target].mean()
             cont_std = non_na[self.target].std()
         
-        for i,filename in enumerate(os.listdir(self.data_dir)):
-            subject=filename.split('_')[-1].split('.')[0] # subject의 형식: NDARINVZRHTXMXD
-            if subject in subjects:
-                # Normalization
-                if self.fine_tune_task == 'regression':
-                    target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
-                    target = target.float()
-                elif self.fine_tune_task == 'binary_classification':
-                    target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
+        for i, subject in enumerate(subjects):
+            # subject의 형식: NDARINVZRHTXMXD
+            # Normalization
+            if self.fine_tune_task == 'regression':
+                target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
+                target = target.float()
+            elif self.fine_tune_task == 'binary_classification':
+                target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
+            
+            if 'area' in self.data_dir:
+                filename = 'smri_area_'+subject+'.npy'
+            elif 'cortical_thickness' in self.data_dir:
+                filename = 'smri_cortical_thickness_'+subject+'.npy'
+            elif 'meancurv' in self.data_dir:
+                filename = 'smri_meancurv_'+subject+'.npy'
+            elif 'volume' in self.data_dir:
+                filename = 'smri_volume_'+subject+'.npy'
                 
-                path_to_sMRIs = os.path.join(self.data_dir, filename)
-                self.index_l.append((i, subject, path_to_sMRIs, target))
+            path_to_sMRIs = os.path.join(self.data_dir, filename)
+            self.index_l.append((i, subject, path_to_sMRIs, target))
 
     def __len__(self):
         N = len(self.index_l)
@@ -472,33 +486,49 @@ class ABCD_struct (BaseDataset):
         
         self.subject_folders = []
         #self.intermediate_vec = kwargs.get('intermediate_vec')
-        
-        # DTI와 sMRI가 같은 subject
-        with open("DTI_sMRI_intersection_sub_list.txt", mode="r") as file:
-            DTI_sMRI_inter = file.read().splitlines()
+       
         
         # ABCD 에서 target value가 결측값인 샘플 제거
         non_na = self.meta_data[['subjectkey',self.target]].dropna(axis=0)
         subjects = list(set(list(non_na['subjectkey'])) & set(DTI_sMRI_inter)) # subjects의 형식: NDARINVZRHTXMXD
+       
+        # DTI와 sMRI가 같은 subject
+        with open("multimodal_sub_list.txt", mode="r") as file:
+            intersect = file.read().splitlines()
+        
+        subjects = list(set(subjects) & set(intersect))   
+        
+        print('whole subject length is:', len(subjects))
+        
         
         if self.fine_tune_task == 'regression':
             cont_mean = non_na[self.target].mean()
             cont_std = non_na[self.target].std()
         
-        for i,smriname in enumerate(os.listdir(self.smri_dir)):
-            subject=smriname.split('_')[-1].split('.')[0] # subject의 형식: NDARINVZRHTXMXD, filename의 형식 : 'smri_NDARINVKPNEX4HY.npy'
-            if subject in subjects:
-                # Normalization
-                if self.fine_tune_task == 'regression':
-                    target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
-                    target = target.float()
-                elif self.fine_tune_task == 'binary_classification':
-                    target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
+        for i,subject in enumerate(subjects):
+            # subject의 형식: NDARINVZRHTXMXD 
+            # Normalization
+            if self.fine_tune_task == 'regression':
+                target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
+                target = target.float()
+            elif self.fine_tune_task == 'binary_classification':
+                target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
+
+            if 'area' in self.smri_dir:
+                smriname = 'smri_area_'+subject+'.npy'
+            elif 'cortical_thickness' in self.smri_dir:
+                smriname = 'smri_cortical_thickness_'+subject+'.npy'
+            elif 'meancurv' in self.smri_dir:
+                smriname = 'smri_meancurv_'+subject+'.npy'
+            elif 'volume' in self.smri_dir:
+                smriname = 'smri_volume_'+subject+'.npy'
                 
-                path_to_sMRIs = os.path.join(self.smri_dir, smriname)
-                dtiname = 'dti_count_'+subject+'.npy'
-                path_to_DTIs = os.path.join(self.dti_dir, dtiname)
-                self.index_l.append((i, subject, path_to_sMRIs, path_to_DTIs, target))
+            path_to_sMRIs = os.path.join(self.smri_dir, smriname)
+            
+            dtiname = 'dti_count_'+subject+'.npy'
+            
+            path_to_DTIs = os.path.join(self.dti_dir, dtiname)
+            self.index_l.append((i, subject, path_to_sMRIs, path_to_DTIs, target))
 
     def __len__(self):
         N = len(self.index_l)
@@ -527,24 +557,38 @@ class ABCD_DTI_sMRI(BaseDataset):
         # ABCD 에서 target value가 결측값인 샘플 제거
         non_na = self.meta_data[['subjectkey',self.target]].dropna(axis=0)
         subjects = list(non_na['subjectkey']) # subjects의 형식: NDARINVZRHTXMXD
-
+        with open("multimodal_sub_list.txt", mode="r") as file:
+            intersect = file.read().splitlines()
+        
+        subjects = list(set(subjects) & set(intersect))
+        
+        print('whole subject length is:', len(subjects))
+        
         if self.fine_tune_task == 'regression':
             cont_mean = non_na[self.target].mean()
             cont_std = non_na[self.target].std()
         
-        for i,filename in enumerate(os.listdir(self.data_dir)):
-            # filename 형식: dti_count+smri_cortical_thickness_NDARINVZRHTXMXD.npy
-            subject=filename.split('_')[-1].split('.')[0] # subject의 형식: NDARINVZRHTXMXD
-            if subject in subjects:
-                # Normalization
-                if self.fine_tune_task == 'regression':
-                    target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
-                    target = target.float()
-                elif self.fine_tune_task == 'binary_classification':
-                    target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
+        
+        for i,subject in enumerate(subjects):
+            # subject의 형식: NDARINVZRHTXMXD
+            # Normalization
+            if self.fine_tune_task == 'regression':
+                target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
+                target = target.float()
+            elif self.fine_tune_task == 'binary_classification':
+                target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
                 
-                path_to_DTI_sMRIs = os.path.join(self.data_dir, filename)
-                self.index_l.append((i, subject, path_to_DTI_sMRIs, target))
+            if 'area' in self.data_dir:
+                filename = 'dti_count+smri_area_'+subject+'.npy'
+            elif 'cortical_thickness' in self.data_dir:
+                filename = 'dti_count+smri_cortical_thickness_'+subject+'.npy'
+            elif 'meancurv' in self.data_dir:
+                filename = 'dti_count+smri_meancurv_'+subject+'.npy'
+            elif 'volume' in self.data_dir:
+                filename = 'dti_count+smri_volume_'+subject+'.npy'
+                
+            path_to_DTI_sMRIs = os.path.join(self.data_dir, filename)
+            self.index_l.append((i, subject, path_to_DTI_sMRIs, target))
 
     def __len__(self):
         N = len(self.index_l)
@@ -579,34 +623,36 @@ class ABCD_multimodal(BaseDataset):
         non_na = self.meta_data[['subjectkey',self.target]].dropna(axis=0)
         subjects = list(non_na['subjectkey']) # subjects의 형식: NDARINVZRHTXMXD
         
-        with open("rsfMRI_upper370_sub_list.txt", mode="r") as file:
-            subject_upper370 = file.read().splitlines()
+        with open("multimodal_sub_list.txt", mode="r") as file:
+            intersect = file.read().splitlines()
         
-        subjects = list(set(subjects) & set(subject_upper370))
-        
-            
-        with open("rsfMRI_filtering_with_nan_sub_list.txt", mode="r") as file:
-            nan_subjects = file.read().splitlines()
-        subjects = set(subjects) - set(nan_subjects)
+        subjects = list(set(subjects) & set(intersect))
         
         if self.fine_tune_task == 'regression':
             cont_mean = non_na[self.target].mean()
             cont_std = non_na[self.target].std()
         
-        for i,filename in enumerate(os.listdir(self.struct_dir)):
-            # filename 형식: dti_count+smri_cortical_thickness_NDARINVZRHTXMXD.npy
-            subject=filename.split('_')[-1].split('.')[0] # subject의 형식: NDARINVZRHTXMXD
-            if subject in subjects:
-                # Normalization
-                if self.fine_tune_task == 'regression':
-                    target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
-                    target = target.float()
-                elif self.fine_tune_task == 'binary_classification':
-                    target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
+        for i, subject in enumerate(subjects):
+            # subject의 형식: NDARINVZRHTXMXD
+            # Normalization
+            if self.fine_tune_task == 'regression':
+                target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
+                target = target.float()
+            elif self.fine_tune_task == 'binary_classification':
+                target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
+
+            if 'area' in self.struct_dir:
+                filename = 'dti_count+smri_area_'+subject+'.npy'
+            elif 'cortical_thickness' in self.struct_dir:
+                filename = 'dti_count+smri_cortical_thickness_'+subject+'.npy'
+            elif 'meancurv' in self.struct_dir:
+                filename = 'dti_count+smri_meancurv_'+subject+'.npy'
+            elif 'volume' in self.struct_dir:
+                filename = 'dti_count+smri_volume_'+subject+'.npy'
                 
-                path_to_DTI_sMRIs = os.path.join(self.struct_dir, filename)
-                path_to_fMRIs =  os.path.join(self.fmri_dir, 'sub-'+subject, 'desikankilliany_sub-'+subject+'.npy')
-                self.index_l.append((i, subject, path_to_DTI_sMRIs, path_to_fMRIs, target))
+            path_to_DTI_sMRIs = os.path.join(self.struct_dir, filename)
+            path_to_fMRIs =  os.path.join(self.fmri_dir, 'sub-'+subject, 'desikankilliany_sub-'+subject+'.npy')
+            self.index_l.append((i, subject, path_to_DTI_sMRIs, path_to_fMRIs, target))
 
     def __len__(self):
         N = len(self.index_l)
@@ -684,16 +730,11 @@ class ABCD_multimodal_prs(BaseDataset):
         non_na = pd.merge(non_na, non_na_prs, how='inner', on='subjectkey')
         subjects = list(non_na['subjectkey']) # subjects의 형식: NDARINVZRHTXMXD
         
-        # 길이가 370 이상인 subject들만 처리
-        with open("rsfMRI_upper370_sub_list.txt", mode="r") as file:
-            subject_upper370 = file.read().splitlines()
+        with open("multimodal_sub_list.txt", mode="r") as file:
+            intersect = file.read().splitlines()
         
-        subjects = list(set(subjects) & set(subject_upper370))
+        subjects = list(set(subjects) & set(intersect))
         
-            
-        with open("rsfMRI_filtering_with_nan_sub_list.txt", mode="r") as file:
-            nan_subjects = file.read().splitlines()
-        subjects = set(subjects) - set(nan_subjects)
         
         # normalization - prs
         prs1_mean = non_na['CPeur2'].mean()
@@ -710,31 +751,38 @@ class ABCD_multimodal_prs(BaseDataset):
             cont_mean = non_na[self.target].mean()
             cont_std = non_na[self.target].std()
         
-        for i,filename in enumerate(os.listdir(self.struct_dir)):
-            # filename 형식: dti_count+smri_cortical_thickness_NDARINVZRHTXMXD.npy
-            subject=filename.split('_')[-1].split('.')[0] # subject의 형식: NDARINVZRHTXMXD
-            if subject in subjects:
-                # get prs
-                prs1 = torch.tensor((non_na.loc[non_na['subjectkey']==subject, 'CPeur2'].values[0] - prs1_mean) / prs1_std)
-                prs1 = prs1.float()
+        for i,subject in enumerate(subjects):
+            # subject의 형식: NDARINVZRHTXMXD
+            # get prs
+            prs1 = torch.tensor((non_na.loc[non_na['subjectkey']==subject, 'CPeur2'].values[0] - prs1_mean) / prs1_std)
+            prs1 = prs1.float()
 
-                prs2 = torch.tensor((non_na.loc[non_na['subjectkey']==subject, 'EAeur1'].values[0] - prs2_mean) / prs2_std)
-                prs2 = prs2.float()
+            prs2 = torch.tensor((non_na.loc[non_na['subjectkey']==subject, 'EAeur1'].values[0] - prs2_mean) / prs2_std)
+            prs2 = prs2.float()
 
-                prs3 = torch.tensor((non_na.loc[non_na['subjectkey']==subject, 'IQeur2'].values[0] - prs3_mean) / prs3_std)
-                prs3 = prs3.float()
+            prs3 = torch.tensor((non_na.loc[non_na['subjectkey']==subject, 'IQeur2'].values[0] - prs3_mean) / prs3_std)
+            prs3 = prs3.float()
                     
                 
-                # Normalization
-                if self.fine_tune_task == 'regression':
-                    target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
-                    target = target.float()
-                elif self.fine_tune_task == 'binary_classification':
-                    target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
+            # Normalization
+            if self.fine_tune_task == 'regression':
+                target = torch.tensor((self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0] - cont_mean) / cont_std)
+                target = target.float()
+            elif self.fine_tune_task == 'binary_classification':
+                target = torch.tensor(self.meta_data.loc[self.meta_data['subjectkey']==subject,self.target].values[0]) 
+
+            if 'area' in self.struct_dir:
+                filename = 'dti_count+smri_area_'+subject+'.npy'
+            elif 'cortical_thickness' in self.struct_dir:
+                filename = 'dti_count+smri_cortical_thickness_'+subject+'.npy'
+            elif 'meancurv' in self.struct_dir:
+                filename = 'dti_count+smri_meancurv_'+subject+'.npy'
+            elif 'volume' in self.struct_dir:
+                filename = 'dti_count+smri_volume_'+subject+'.npy'
                 
-                path_to_DTI_sMRIs = os.path.join(self.struct_dir, filename)
-                path_to_fMRIs =  os.path.join(self.fmri_dir, 'sub-'+subject, 'desikankilliany_sub-'+subject+'.npy')
-                self.index_l.append((i, subject, path_to_DTI_sMRIs, path_to_fMRIs, target, prs1, prs2, prs3))
+            path_to_DTI_sMRIs = os.path.join(self.struct_dir, filename)
+            path_to_fMRIs =  os.path.join(self.fmri_dir, 'sub-'+subject, 'desikankilliany_sub-'+subject+'.npy')
+            self.index_l.append((i, subject, path_to_DTI_sMRIs, path_to_fMRIs, target, prs1, prs2, prs3))
 
     def __len__(self):
         N = len(self.index_l)

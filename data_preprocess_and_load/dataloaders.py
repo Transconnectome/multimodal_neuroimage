@@ -58,21 +58,11 @@ class DataHandler():
         train_loader = dataset(**self.kwargs) #이름은 loader이나 실제론 dataset class
         eval_loader = dataset(**self.kwargs)
         eval_loader.augment = None
-        self.subject_list = train_loader.index_l
+        self.subject_list = train_loader.index_l # ADHD 기준 정상적으로 3520 출력
         train_idx,val_idx,test_idx = self.determine_split_randomly(self.subject_list,**self.kwargs)
-#         if self.current_split_exists():
-#             train_names, val_names, test_names = self.load_split()
-#             train_idx, val_idx, test_idx = self.convert_subject_list_to_idx_list(train_names,val_names,test_names,self.subject_list)
-#         else:
-#             train_idx,val_idx,test_idx = self.determine_split_randomly(self.subject_list,**self.kwargs)
 
-        # train_idx = [train_idx[x] for x in torch.randperm(len(train_idx))[:1000]]
-        # val_idx = [val_idx[x] for x in torch.randperm(len(val_idx))[:1000]]
         
-        ## restrict to 1000 datasets
-        #val_idx = list(np.random.choice(len(val_idx), self.num_val_samples, replace=False))
-        
-        #index를 통해 dataset의 일부를 가져오고싶을때 Subset 사용
+        #index를 통해 dataset의 일부를 가져오고싶을때 Subset 사용 : 맨날 여기서 출력하던 거였음!!
         print('length of train_idx:', len(train_idx)) #900984
         print('length of val_idx:', len(val_idx)) #192473 -> 1000
         print('length of test_idx:', len(test_idx)) #194774
@@ -80,6 +70,7 @@ class DataHandler():
         train_loader = Subset(train_loader, train_idx)
         val_loader = Subset(eval_loader, val_idx)
         test_loader = Subset(eval_loader, test_idx)
+        
         if self.kwargs.get('distributed'):
             train_sampler = DistributedSampler(train_loader, shuffle=True)
             valid_sampler = DistributedSampler(val_loader, shuffle=False)
@@ -114,30 +105,24 @@ class DataHandler():
         eval_loader = dataset(**self.kwargs)
         eval_loader.augment = None
         self.subject_list = train_loader.index_l
-        #print('index_l:',self.subject_list)
         if self.current_split_exists():
             train_names, val_names, test_names = self.load_split()
             train_idx, val_idx, test_idx = self.convert_subject_list_to_idx_list(train_names,val_names,test_names,self.subject_list)
         else:
             train_idx,val_idx,test_idx = self.determine_split_randomly(self.subject_list,**self.kwargs)
 
-        # train_idx = [train_idx[x] for x in torch.randperm(len(train_idx))[:1000]]
-        # val_idx = [val_idx[x] for x in torch.randperm(len(val_idx))[:1000]]
-        
-        ## restrict to 1000 datasets
-        #val_idx = list(np.random.choice(len(val_idx), self.num_val_samples, replace=False))
         
         #index를 통해 dataset의 일부를 가져오고싶을때 Subset 사용
-        print('length of train_idx:', len(train_idx)) #900984
-        print('length of val_idx:', len(val_idx)) #192473 -> 1000
-        print('length of test_idx:', len(test_idx)) #194774 # 이것도 잘 됨.
+        #print('length of train_idx:', len(train_idx)) #900984
+        #print('length of val_idx:', len(val_idx)) #192473 -> 1000
+        #print('length of test_idx:', len(test_idx)) #194774 # 이것도 잘 됨.
         
         train_loader = Subset(train_loader, train_idx)
         val_loader = Subset(eval_loader, val_idx)
         test_loader = Subset(eval_loader, test_idx)
-        print('train loader is:', train_loader)
-        print('val loader is:', val_loader)
-        print('test loader is:', test_loader)
+        #print('train loader is:', train_loader)
+        #print('val loader is:', val_loader)
+        #print('test loader is:', test_loader)
         
         return train_loader, val_loader, test_loader
     
@@ -164,7 +149,7 @@ class DataHandler():
                     f.write(str(subj_name) + '\n')
 
     def convert_subject_list_to_idx_list(self,train_names,val_names,test_names,subj_list):
-        subj_idx = np.array([str(x[0]) for x in subj_list])
+        subj_idx = np.array([str(x[0]) for x in subj_list]) # 3520 ADHD
         train_idx = np.where(np.in1d(subj_idx, train_names))[0].tolist()
         val_idx = np.where(np.in1d(subj_idx, val_names))[0].tolist()
         test_idx = np.where(np.in1d(subj_idx, test_names))[0].tolist()
@@ -174,13 +159,14 @@ class DataHandler():
         train_percent = kwargs.get('train_split')
         val_percent = kwargs.get('val_split')
         S = len(np.unique([x[0] for x in index_l]))
-        S_train = int(S * train_percent)
-        S_val = int(S * val_percent)
-        S_train = np.random.choice(S, S_train, replace=False)
+        S_train = int(S * train_percent) # 2464 in ADHD
+        S_val = int(S * val_percent) # 528 in ADHD
+        S_train = np.random.choice(S, S_train, replace=False) # 2464 in ADHD
         remaining = np.setdiff1d(np.arange(S), S_train)
-        S_val = np.random.choice(remaining,S_val, replace=False)
-        S_test = np.setdiff1d(np.arange(S), np.concatenate([S_train,S_val]))
+        S_val = np.random.choice(remaining,S_val, replace=False) # 528 in ADHD
+        S_test = np.setdiff1d(np.arange(S), np.concatenate([S_train,S_val])) # 528 in ADHD
         train_idx,val_idx,test_idx = self.convert_subject_list_to_idx_list(S_train,S_val,S_test,self.subject_list)
+        ## convert ~~~ 이 함수에서 문제가 생기는 듯 함.
         self.save_split({'train_subjects':S_train,'val_subjects':S_val,'test_subjects':S_test})
         return train_idx,val_idx,test_idx
 
